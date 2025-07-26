@@ -235,10 +235,6 @@ void Reader::SearchCandidates(const std::vector<int32_t> &prefix,
     Trie &trie)
 {
     auto worker = [&](const SubIndex &subIndex) {
-#if SPDLOG_ACTIVE_LEVEL <= SPDLOG_LEVEL_DEBUG
-        const std::chrono::milliseconds threshold(5);
-        auto start = std::chrono::high_resolution_clock::now();
-#endif
 
         ssize_t startOfIndices = -1;
         ssize_t endOfIndices = -1;
@@ -253,24 +249,7 @@ void Reader::SearchCandidates(const std::vector<int32_t> &prefix,
             auto lineStart = subIndex.data.begin() + dataIndex;
             auto lineEnd = lineStart + prefix.size();
 
-#if SPDLOG_ACTIVE_LEVEL <= SPDLOG_LEVEL_DEBUG
-            auto small_start = std::chrono::high_resolution_clock::now();
-#endif
-
             auto cmpResult = compare_ranges(lineStart, lineEnd, prefix.begin(), prefix.end());
-
-#if SPDLOG_ACTIVE_LEVEL <= SPDLOG_LEVEL_DEBUG
-            auto small_end = std::chrono::high_resolution_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(small_end - small_start);
-
-            if (duration > threshold) {
-                std::thread::id threadId = std::this_thread::get_id();
-                std::ostringstream oss;
-                oss << threadId;
-                std::string threadIdStr = oss.str();
-                SPDLOG_LOGGER_DEBUG(logger, "Left anchor compare: {} ms. Thread id: {}", duration.count(), threadIdStr);
-            }
-#endif
 
             if (cmpResult == CompareResult::EQUAL) {
                 startOfIndices = middleAnchor;
@@ -286,21 +265,6 @@ void Reader::SearchCandidates(const std::vector<int32_t> &prefix,
             return;
         }
 
-#if SPDLOG_ACTIVE_LEVEL <= SPDLOG_LEVEL_DEBUG
-        auto end = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-
-        if (duration > threshold) {
-            std::thread::id threadId = std::this_thread::get_id();
-            std::ostringstream oss;
-            oss << threadId;
-            std::string threadIdStr = oss.str();
-            SPDLOG_LOGGER_DEBUG(logger, "Left anchor: {} ms. Thread id: {}", duration.count(), threadIdStr);
-        }
-
-        start = std::chrono::high_resolution_clock::now();
-#endif
-
         leftAnchor = startOfIndices;
         rightAnchor = subIndex.indexData.size() - 1;
         while (leftAnchor <= rightAnchor) {
@@ -309,25 +273,7 @@ void Reader::SearchCandidates(const std::vector<int32_t> &prefix,
             auto lineStart = subIndex.data.begin() + dataIndex;
             auto lineEnd = lineStart + prefix.size();
 
-#if SPDLOG_ACTIVE_LEVEL <= SPDLOG_LEVEL_DEBUG
-            auto small_start = std::chrono::high_resolution_clock::now();
-#endif
-
             auto cmpResult = compare_ranges(lineStart, lineEnd, prefix.begin(), prefix.end());
-
-#if SPDLOG_ACTIVE_LEVEL <= SPDLOG_LEVEL_DEBUG
-            auto small_end = std::chrono::high_resolution_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(small_end - small_start);
-
-            if (duration > threshold) {
-                std::thread::id threadId = std::this_thread::get_id();
-                std::ostringstream oss;
-                oss << threadId;
-                std::string threadIdStr = oss.str();
-                SPDLOG_LOGGER_DEBUG(
-                    logger, "Right anchor compare: {} ms. Thread id: {}", duration.count(), threadIdStr);
-            }
-#endif
 
             if (cmpResult == CompareResult::EQUAL) {
                 endOfIndices = middleAnchor;
@@ -338,21 +284,6 @@ void Reader::SearchCandidates(const std::vector<int32_t> &prefix,
                 rightAnchor = middleAnchor - 1;
             }
         }
-
-#if SPDLOG_ACTIVE_LEVEL <= SPDLOG_LEVEL_DEBUG
-        end = std::chrono::high_resolution_clock::now();
-        duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-
-        if (duration > threshold) {
-            std::thread::id threadId = std::this_thread::get_id();
-            std::ostringstream oss;
-            oss << threadId;
-            std::string threadIdStr = oss.str();
-            SPDLOG_LOGGER_DEBUG(logger, "Right anchor: {} ms. Thread id: {}", duration.count(), threadIdStr);
-        }
-
-        start = std::chrono::high_resolution_clock::now();
-#endif
 
         std::unordered_set<size_t> matches_ranges;
         size_t indices_size = endOfIndices + 1 - startOfIndices;
@@ -380,19 +311,6 @@ void Reader::SearchCandidates(const std::vector<int32_t> &prefix,
         for (const auto &res : local_results) {
             trie.InsertSlice(res);
         }
-
-#if SPDLOG_ACTIVE_LEVEL <= SPDLOG_LEVEL_DEBUG
-        end = std::chrono::high_resolution_clock::now();
-        duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-
-        if (duration > threshold) {
-            std::thread::id threadId = std::this_thread::get_id();
-            std::ostringstream oss;
-            oss << threadId;
-            std::string threadIdStr = oss.str();
-            SPDLOG_LOGGER_DEBUG(logger, "Merging: {} ms. Thread id: {}", duration.count(), threadIdStr);
-        }
-#endif
     };
 
     for (const std::shared_ptr<SubIndex> subIndexPtr : indexes) {
