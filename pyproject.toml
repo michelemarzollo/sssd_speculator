@@ -1,0 +1,22 @@
+[build-system]
+requires = [
+    "setuptools>=64",
+    "wheel",
+    "pybind11>=2.13",
+    "cmake>=3.22",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sssd_speculator"
+version = "0.1"
+description = "Tree & suffix-array n‑gram model for efficient and accurate retrieval for speculative decoding"
+requires-python = ">=3.9"
+dependencies = []
+license = {text = "Proprietary"}
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools]
+zip-safe = false
