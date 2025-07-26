@@ -196,3 +196,12 @@ For more details, you can check our paper https://arxiv.org/abs/2411.05894 . To 
       url={https://arxiv.org/abs/2411.05894}, 
 }
 ```
+
+## Acknowledgments
+
+We thank the authors of the following repositories, which are used in SSSD:
+
+* [libsais](https://github.com/IlyaGrebnov/libsais) by Ilya Grebnov
+* [ThreadPool](https://github.com/progschj/ThreadPool) by Jakob Progsch and Václav Zeman
+
+We also thank the authors of [REST](https://github.com/FasterDecoding/REST/tree/main) and [PIA](https://github.com/alipay/PainlessInferenceAcceleration/tree/main), which provided helpful inspiration during development.
