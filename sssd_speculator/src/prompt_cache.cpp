@@ -52,15 +52,15 @@ void Sequence::Put(std::vector<int> &input)
 {
     putStarted.store(true);
 
-    // Last few tokens can be attached to self output to connect end of prompt to response
-    const std::size_t reserve = std::min<std::size_t>(inputTokensToPutInSelfOutput, input.size());
-    if (reserve) {
-        selfOutput.insert(selfOutput.end(), input.end() - reserve, input.end());
-    }
+    // // Last few tokens can be attached to self output to connect end of prompt to response
+    // const std::size_t reserve = std::min<std::size_t>(inputTokensToPutInSelfOutput, input.size());
+    // if (reserve) {
+    //     selfOutput.insert(selfOutput.end(), input.end() - reserve, input.end());
+    // }
 
     auto start_iter = input.begin();
     auto max_iter = input.end();
-    while (start_iter < max_iter - inputTokensToPutInSelfOutput) {  // Don't insert single tokens
+    while (start_iter < max_iter - 1) { //inputTokensToPutInSelfOutput) {  // Don't insert single tokens
         cache.InsertIter(start_iter, std::min(start_iter + branchLength, max_iter));
         start_iter++;
     }
@@ -79,10 +79,10 @@ void Sequence::AsyncPut(std::vector<int> &&input)
     putFinished.store(false);
     stopPutThread = false;  // in case this is not the first AsyncPut call
 
-    const std::size_t reserve = std::min<std::size_t>(inputTokensToPutInSelfOutput, input.size());
-    if (reserve) {
-        selfOutput.insert(selfOutput.end(), input.end() - reserve, input.end());
-    }
+    // const std::size_t reserve = std::min<std::size_t>(inputTokensToPutInSelfOutput, input.size());
+    // if (reserve) {
+    //     selfOutput.insert(selfOutput.end(), input.end() - reserve, input.end());
+    // }
 
     auto inputPointer = std::make_shared<std::vector<int>>(input);
 
@@ -98,7 +98,7 @@ void Sequence::PutThreadFunction(std::shared_ptr<std::vector<int>> input)
     // Don't modify selfOutput: it's not thread safe
     auto start_iter = input->begin();
     auto max_iter = input->end();
-    while (start_iter < max_iter - inputTokensToPutInSelfOutput && !stopPutThread.load()) {  // Don't insert single tokens
+    while (start_iter < max_iter - 1 && !stopPutThread.load()) {  // Don't insert single tokens
         cache.InsertIter(start_iter, std::min(start_iter + branchLength, max_iter));
         start_iter++;
     }

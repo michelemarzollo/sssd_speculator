@@ -6,6 +6,7 @@
 #include <pybind11/numpy.h>
 #include <queue>
 #include <reader.hpp>
+#include <cassert>
 
 namespace py = pybind11;
 
@@ -22,11 +23,6 @@ a vector, so that it is easy (for the only thread using it) to access it without
 bigger means using less blocks for longer sequences, but having more unused memory over time. Using a smaller number
 allows more recycling (especially if only few sequences are very long). */
 static const size_t MAX_POOL_BLOCK_SIZE = 2048;
-
-/* The number of Tries to allocate in the beginning, should be the max number of sequences. Otherwise
-The vector will simply be reallocated (not a big deal). These tries will be used for constructing the
-datastore candidates during retrieval. */
-static const size_t STARTING_NUM_TRIES = 8;
 
 /*
     indexFilePath:              The path from which the datastore should be loaded.
@@ -51,17 +47,19 @@ static const size_t STARTING_NUM_TRIES = 8;
     vocabSize:                  The size of the vocabulary of the LLM. This number can be greater than the real vocabulary
                                     size (with minor effiency penalties), but not smaller!
                                 We add 100 in case some special tokens were added, but the vocabulary was not updated.
+    maxBatchSize:               The maxium number of sequences that can be queried at the same time. More is gonna
+                                    give an error.
     promptTokensInDatastore:    The last 'prompt_tokens_in_datastore' tokens from the input will be added together
                                     with the self output in the datastore. Defaults to 3.
-    max_topk:                   For SGLang only, the maximum branching factor of each node in the tree.
+    maxTopk:                   For SGLang only, the maximum branching factor of each node in the tree.
     */
 Reader::Reader(const std::string &indexFilePath, int stopToken, int maxSearchEntries, int promptBranchLength,
     int promptPrefixLength, int maxOutPutSize, bool liveDatastoreUpdates, int maxChunkSize, int maxIndexes,
-    int updateIntervalMs, int vocabSize, int promptTokensInDatastore, std::size_t max_topk)
+    int updateIntervalMs, int vocabSize, int maxBatchSize, int promptTokensInDatastore, std::size_t maxTopk)
     : stopToken(stopToken), promptCache(promptBranchLength, promptPrefixLength, promptTokensInDatastore),
       maxSearchEntries(maxSearchEntries), maxOutPutSize(maxOutPutSize), updateDatastore(liveDatastoreUpdates),
       maxChunkSize(maxChunkSize), maxIndexes(maxIndexes), updateIntervalMs(updateIntervalMs), stopThread(false),
-      datastoreUpdatePause(false), max_topk(max_topk)
+      datastoreUpdatePause(false), maxBatchSize(maxBatchSize), maxTopk(maxTopk)
 {
     logger = GetLogger();
 
@@ -85,8 +83,8 @@ Reader::Reader(const std::string &indexFilePath, int stopToken, int maxSearchEnt
     this->indexes = std::deque<std::shared_ptr<SubIndex>>();
 
     // Allocate memory for Tries to be used during retrieval
-    datastoreTriesToBuild.reserve(STARTING_NUM_TRIES);
-    for (int i = 0; i < STARTING_NUM_TRIES; ++i) {
+    datastoreTriesToBuild.reserve(maxBatchSize);
+    for (int i = 0; i < maxBatchSize; ++i) {
         datastoreTriesToBuild.emplace_back(stopToken, *nodeBlockPool);  // Construct each Trie in place
     }
 
@@ -397,6 +395,7 @@ std::tuple<std::vector<std::vector<int>>, std::vector<std::vector<int>>, std::ve
     Reader::GetCandidates(const std::vector<std::vector<int>> &prefixes, const std::vector<int> &decodingLengths,
         const std::vector<int> &branchLengths, const std::vector<int> &seqIds)
 {
+    assert(prefixes.size() <= maxBatchSize && "the batch size cannot be larger than what declared at construction (max_batch_size)");
     std::lock_guard<std::mutex> lock(indexesMtx);
     size_t numPrefixes = prefixes.size();
     rawMasksBool.resize(numPrefixes);  // don't explicitely clear: you can parallelize even the clearing
@@ -531,6 +530,7 @@ std::tuple<
     Reader::GetCandidatesSglang(const std::vector<std::vector<int>> &prefixes, const std::vector<int> &decodingLengths,
         const std::vector<int> &branchLengths, const std::vector<int> &seqIds)
 {
+    assert(prefixes.size() <= maxBatchSize && "the batch size cannot be larger than what declared at construction (max_batch_size)");
     std::lock_guard<std::mutex> lock(indexesMtx);
     size_t numPrefixes = prefixes.size();
     rawMasksBool.resize(numPrefixes);  // don't explicitely clear: you can parallelize even the clearing

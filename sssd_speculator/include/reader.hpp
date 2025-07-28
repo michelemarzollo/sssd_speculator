@@ -21,7 +21,7 @@ class Reader {
 public:
     Reader(const std::string &indexFilePath, int stopToken, int maxSearchEntries, int promptBranchLength,
         int promptPrefixLength, int maxOutPutLength, bool liveCacheUpdates, int maxChunkSize, int maxIndexes,
-        int updateIntervalMs, int vocabSize, int promptTokensInDatastore, std::size_t max_topk);
+        int updateIntervalMs, int vocabSize, int maxBatchSize, int promptTokensInDatastore, std::size_t max_topk);
 
     ~Reader();
 
@@ -76,12 +76,13 @@ private:
     std::shared_ptr<VectorPool> selfOutputPool;
     // Just for memory pooling, to avoid destroyng the trie once it's created
     std::vector<Trie> datastoreTriesToBuild;
+    std::size_t maxBatchSize;
     // For SGLang
     std::vector<std::vector<int>> firstChildren;
     std::vector<std::vector<int>> nextSiblings;
     std::vector<std::future<std::tuple<std::vector<int>, std::vector<int>,
             std::vector<int>, std::vector<int>>>> sglangFutures;
-    std::size_t max_topk;
+    std::size_t maxTopk;
 
     // Object for efficient candidates retrieval
     std::shared_ptr<ThreadPool> threadPool;
