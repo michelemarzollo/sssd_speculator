@@ -71,6 +71,7 @@ setuptools.setup(
     name='sssd_speculator',
     author='Huawei Technologies Co., Ltd.',
     author_email='michele.marzollo@huawei.com',
+    url='https://github.com/michelemarzollo/sssd_speculator',
     license='Proprietary',
     packages=["sssd_speculator"],
     ext_modules=[
