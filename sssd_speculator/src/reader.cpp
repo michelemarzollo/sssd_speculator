@@ -93,6 +93,13 @@ Reader::Reader(const std::string &indexFilePath, int stopToken, int maxSearchEnt
             throw std::runtime_error(
                 "System is not little-endian. Please implement the reading logic (swap bytes) to read the index file.");
         }
+        // File extension validation
+        const std::string idxExtension = ".idx";
+        if (indexFilePath.length() < idxExtension.size() ||
+            indexFilePath.substr(indexFilePath.length() - idxExtension.size()) != idxExtension) {
+            throw std::runtime_error(
+                "Datastore index file must have a .idx extension: " + indexFilePath);
+        }
 
         // Load the datastore
         std::ifstream index_file(indexFilePath, std::ios::binary);
