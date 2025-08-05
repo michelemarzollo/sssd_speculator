@@ -11,7 +11,7 @@ namespace py = pybind11;
 PYBIND11_MODULE(sssd_speculator, m)
 {
     py::class_<Reader>(m, "Reader")
-        .def(py::init<const std::string &, int, int, int, int, int, bool, int, int, int, int, int, int, int>(),
+        .def(py::init<const std::string &, int, int, int, int, int, bool, int, int, int, int, int, int>(),
             py::arg("index_file_path"),
             py::arg("stop_token") = -1,
             py::arg("max_search_entries") = 100,
@@ -24,8 +24,7 @@ PYBIND11_MODULE(sssd_speculator, m)
             py::arg("update_interval_ms") = 20 * 60 * 1000,
             py::arg("vocab_size") = 300'000,
             py::arg("max_batch_size") = 256,
-            py::arg("prompt_tokens_in_datastore") = 3,
-            py::arg("max_topk") = 100)
+            py::arg("prompt_tokens_in_datastore") = 3)
         .def("get_candidates",
             &Reader::GetCandidates,
             py::arg("prefixes"),
@@ -37,6 +36,7 @@ PYBIND11_MODULE(sssd_speculator, m)
             py::arg("prefixes"),
             py::arg("decoding_lengths"),
             py::arg("branch_lengths"),
+            py::arg("max_topks"),
             py::arg("seq_ids"))
         .def("put", &Reader::AsyncPut, py::arg("input"), py::arg("seq_id"))
         .def("sync_put", &Reader::Put, py::arg("input"), py::arg("seq_id"))

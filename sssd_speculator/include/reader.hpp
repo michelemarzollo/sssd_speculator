@@ -21,7 +21,7 @@ class Reader {
 public:
     Reader(const std::string &indexFilePath, int stopToken, int maxSearchEntries, int promptBranchLength,
         int promptPrefixLength, int maxOutPutLength, bool liveCacheUpdates, int maxChunkSize, int maxIndexes,
-        int updateIntervalMs, int vocabSize, int maxBatchSize, int promptTokensInDatastore, std::size_t max_topk);
+        int updateIntervalMs, int vocabSize, int maxBatchSize, int promptTokensInDatastore);
 
     ~Reader();
 
@@ -33,13 +33,13 @@ public:
             const std::vector<int> &branchLengths, const std::vector<int> &seqIds);
 
     std::tuple<std::vector<int>, std::vector<int>, std::vector<int>, std::vector<int>> GetBatchElementCandidatesSglang(
-        const std::vector<int> &prefix, int decoding_length, int branchLength, std::shared_ptr<bool[]> &mask_buffer,
+        const std::vector<int> &prefix, int decoding_length, int branchLength, int maxTopk, std::shared_ptr<bool[]> &mask_buffer,
         int seqId, Trie &full_trie);
     
     std::tuple<std::vector<std::vector<int>>, std::vector<std::vector<int>>, std::vector<std::vector<int>>,
         std::vector<std::vector<int>>, std::vector<py::array_t<bool>>> GetCandidatesSglang(
             const std::vector<std::vector<int>> &prefixes, const std::vector<int> &decodingLengths,
-            const std::vector<int> &branchLengths, const std::vector<int> &seqIds);
+            const std::vector<int> &branchLengths, const std::vector<int> &maxTopks, const std::vector<int> &seqIds);
 
     void Put(std::vector<int> &input, int seqId);
 
@@ -82,7 +82,6 @@ private:
     std::vector<std::vector<int>> nextSiblings;
     std::vector<std::future<std::tuple<std::vector<int>, std::vector<int>,
             std::vector<int>, std::vector<int>>>> sglangFutures;
-    std::size_t maxTopk;
 
     // Object for efficient candidates retrieval
     std::shared_ptr<ThreadPool> threadPool;

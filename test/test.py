@@ -399,6 +399,7 @@ def test_sglang_structure(initialize_index):
         [[0]],
         decoding_lengths=[16],
         branch_lengths=[3],
+        max_topks=[100],
         seq_ids=[0]
     )
     for i, mask in enumerate(decoding_masks):
@@ -439,15 +440,16 @@ def test_sglang_max_topk():
     writer.add_entry([1, 99, 41, 51])
     writer.finalize()
 
-    reader = sssd_speculator.Reader(index_file_path=datastore_path, max_topk=2)
+    reader = sssd_speculator.Reader(index_file_path=datastore_path)
 
     output_ids, depths, retrieve_next_token, retrieve_next_sibling, decoding_masks = reader.get_candidates_sglang(
         [[1]],
         decoding_lengths=[8],
         branch_lengths=[3],
+        max_topks=[2],
         seq_ids=[0]
     )
-    assert 99 not in output_ids
+    assert 99 not in output_ids[0]
 
     os.remove(datastore_path)
 

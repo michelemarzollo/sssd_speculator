@@ -51,15 +51,14 @@ static const size_t MAX_POOL_BLOCK_SIZE = 2048;
                                     give an error.
     promptTokensInDatastore:    The last 'prompt_tokens_in_datastore' tokens from the input will be added together
                                     with the self output in the datastore. Defaults to 3.
-    maxTopk:                   For SGLang only, the maximum branching factor of each node in the tree.
     */
 Reader::Reader(const std::string &indexFilePath, int stopToken, int maxSearchEntries, int promptBranchLength,
     int promptPrefixLength, int maxOutPutSize, bool liveDatastoreUpdates, int maxChunkSize, int maxIndexes,
-    int updateIntervalMs, int vocabSize, int maxBatchSize, int promptTokensInDatastore, std::size_t maxTopk)
+    int updateIntervalMs, int vocabSize, int maxBatchSize, int promptTokensInDatastore)
     : stopToken(stopToken), promptCache(promptBranchLength, promptPrefixLength, promptTokensInDatastore),
       maxSearchEntries(maxSearchEntries), maxOutPutSize(maxOutPutSize), updateDatastore(liveDatastoreUpdates),
       maxChunkSize(maxChunkSize), maxIndexes(maxIndexes), updateIntervalMs(updateIntervalMs), stopThread(false),
-      datastoreUpdatePause(false), maxBatchSize(maxBatchSize), maxTopk(maxTopk)
+      datastoreUpdatePause(false), maxBatchSize(maxBatchSize)
 {
     logger = GetLogger();
 
@@ -451,11 +450,11 @@ std::tuple<std::vector<std::vector<int>>, std::vector<std::vector<int>>, std::ve
 }
 
 std::tuple<std::vector<int>, std::vector<int>, std::vector<int>, std::vector<int>> Reader::GetBatchElementCandidatesSglang(
-    const std::vector<int> &prefix, int decoding_length, int branchLength, std::shared_ptr<bool[]> &maskBuffer,
+    const std::vector<int> &prefix, int decoding_length, int branchLength, int maxTopk, std::shared_ptr<bool[]> &maskBuffer,
     int seqId, Trie &datastoreTrie)
 {
     std::priority_queue<ProbCandidateNode> pq;
-    FinalTrie finalTrie(prefix.back(), decoding_length);
+    FinalTrie finalTrie(prefix.back(), decoding_length, maxTopk);
     // Add prompt information
     std::vector<std::pair<TrieNode *, int>> results;
     auto it = promptCache.sequences.find(seqId);
@@ -535,7 +534,7 @@ std::tuple<
         std::vector<py::array_t<bool>>      // boolMasks
 >
     Reader::GetCandidatesSglang(const std::vector<std::vector<int>> &prefixes, const std::vector<int> &decodingLengths,
-        const std::vector<int> &branchLengths, const std::vector<int> &seqIds)
+        const std::vector<int> &branchLengths, const std::vector<int> &maxTopks, const std::vector<int> &seqIds)
 {
     assert(prefixes.size() <= maxBatchSize && "the batch size cannot be larger than what declared at construction (max_batch_size)");
     std::lock_guard<std::mutex> lock(indexesMtx);
@@ -550,10 +549,11 @@ std::tuple<
     for (size_t i = 0; i < numPrefixes; ++i) {
         // Enqueue each task and get future for the task result
         sglangFutures.push_back(
-            threadPool->Enqueue(PRIORITY_HIGH, [this, i, &prefixes, &decodingLengths, &branchLengths, &seqIds]() {
+            threadPool->Enqueue(PRIORITY_HIGH, [this, i, &prefixes, &decodingLengths, &branchLengths, &maxTopks, &seqIds]() {
                 return this->GetBatchElementCandidatesSglang(prefixes[i],
                     decodingLengths[i],
                     branchLengths[i],
+                    maxTopks[i],
                     this->rawMasksBool[i],
                     seqIds[i],
                     datastoreTriesToBuild[i]);
