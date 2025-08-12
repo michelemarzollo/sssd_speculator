@@ -147,6 +147,31 @@ def test_prompt_cache_stream_put(initialize_index):
     reader.finish_all()
 
 
+def test_variable_batch(initialize_index):
+    # Batch size should adpat if more sequences are requested.
+    reader = sssd_speculator.Reader(index_file_path=initialize_index,
+                               prompt_branch_length=6,
+                               prompt_prefix_length=2,
+                               max_batch_size=1)
+    reader.sync_put([100, 101, 102], seq_id=0)
+    reader.stream_put([0, 24, 21, 2], seq_id=0)
+    reader.stream_put([12], seq_id=0)
+    reader.stream_put([13, 14, 15, 16], seq_id=0)
+
+    output_ids, depths, decoding_masks = reader.get_candidates(
+        [[24, 21], [24, 21], [3, 72]],
+        decoding_lengths=[8]*3,
+        branch_lengths=[3]*3,
+        seq_ids=[0, 1, 2]
+    )
+
+    assert output_ids[0] == [21, 2, 12, 13, 14, 15]
+    assert output_ids[1] == [21]
+    assert output_ids[2] == [72]
+
+    reader.finish_all()
+
+
 def test_remove_sequence(initialize_index):
     reader = sssd_speculator.Reader(index_file_path=initialize_index,
                                prompt_branch_length=4,

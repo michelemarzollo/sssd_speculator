@@ -17,7 +17,7 @@ and changed with a new hashmap */
 static const int MAX_CHILDREN_OF_EMPTY_NODE = 64;
 
 /* The nodes in the first block, the one that will be recycled, will on average have more children (more
-likely to be close to root, at least some of them): let's be less strict with deallocation, this are just
+likely to be close to root, at least some of them): let's be less strict with deallocation, these are just
 a few blocks. */
 static const int MAX_CHILDREN_OF_EMPTY_NODE_FIRST_BLOCK = 128;
 
@@ -98,8 +98,9 @@ the root which is always big).*/
 void TrieNodePool::ClearVector(std::vector<TrieNode> &block, size_t maxIndex, bool isFirstBlock)
 {
     if (!block.empty()) {
+        maxIndex = std::min(maxIndex, block.size());
         if (isFirstBlock) {
-            // First element could is the root node -> clear map but never deallocate
+            // First element is the root node -> clear map but never deallocate
             block[0].children.clear();
             block[0].count = 0;
             for (size_t i = 1; i < maxIndex; i++) {
@@ -153,15 +154,17 @@ void TrieNodePool::ClearPool(bool dontClearNodesIfNeeded)
             }
         }
         // Only clear the root
-        currNodePool[0].children.clear();
-        currNodePool[0].count = 0;
+        if (!currNodePool.empty()) {
+            currNodePool[0].children.clear();
+            currNodePool[0].count = 0;
+        }
     } else {
         if (nodePools.empty()) {
             // There is only one block (with root)
-            ClearVector(currNodePool, nextNodeIdx, true);
+            ClearVector(currNodePool, std::min(nextNodeIdx, currNodePool.size()), true);
         } else {
             // The root block is the first of the deque: the current block can be returned
-            ClearVector(currNodePool, nextNodeIdx, false);
+            ClearVector(currNodePool, std::min(nextNodeIdx, currNodePool.size()), false);
             // For some weird reason this is faster
             blockPool.ReleaseBlockWithCopy(currNodePool);
 
@@ -188,19 +191,34 @@ void TrieNodePool::ClearPool(bool dontClearNodesIfNeeded)
 TrieNodePool::~TrieNodePool()
 {
     SPDLOG_LOGGER_TRACE(logger, "Destroying the node pool!");
-    ClearVector(currNodePool, nextNodeIdx, false);
-    blockPool.ReleaseBlock(std::move(currNodePool));
+
+    // Clamp to the actual size to avoid OOB if moved-from left nextNodeIdx nonzero
+    const size_t upTo = std::min(nextNodeIdx, currNodePool.size());
+    if (upTo > 0) {
+        ClearVector(currNodePool, upTo, false);
+    }
+
+    // Don’t return an empty block to the pool
+    if (!currNodePool.empty()) {
+        blockPool.ReleaseBlock(std::move(currNodePool));
+    }
+
     while (!nodePools.empty()) {
-        std::vector<TrieNode> &currentBlock = nodePools.front();
-        ClearVector(currentBlock, currentBlock.size(), false);
-        blockPool.ReleaseBlock(std::move(currentBlock));
+        auto& currentBlock = nodePools.front();
+        if (!currentBlock.empty()) {
+            ClearVector(currentBlock, currentBlock.size(), false);
+            blockPool.ReleaseBlock(std::move(currentBlock));
+        }
         nodePools.pop_front();
     }
 }
 
 TrieNodePool::TrieNodePool(TrieNodePool &&other) noexcept
-    : blockPool(other.blockPool), currNodePool(std::move(other.currNodePool)), nextNodeIdx(other.nextNodeIdx),
-      nodePools(std::move(other.nodePools)), logger(std::move(other.logger))
+    : blockPool(other.blockPool),
+      currNodePool(std::move(other.currNodePool)),
+      nextNodeIdx(other.nextNodeIdx),
+      nodePools(std::move(other.nodePools)),
+      logger(std::move(other.logger))
 {}
 
 TrieNodePool &TrieNodePool::operator=(TrieNodePool &&other) noexcept
