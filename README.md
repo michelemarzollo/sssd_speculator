@@ -74,8 +74,13 @@ setting the model path and running the file.**
 ### Updating the live datastore
 
 If you don't have a large datastore to use (you can set the path to ""), or if you have it but want to improve it with data
-coming from the model, you can use the live datastore (see below). This runs in a separate thread and has no impact in the insertion
-and retrieval of candidates.
+coming from the model, you can use the live datastore (see below). This runs in a separate thread and has no impact in the speed of
+insertion and retrieval of candidates.
+If you have used the live datastore, you can save the created  or updated datastore with:
+
+```python
+reader.save_datastore(path="/path/to/datastore")
+```
 
 ### Getting drafts for speculation
 
@@ -93,7 +98,9 @@ reader = speculator.Reader(index_file_path="/path/to/datastore",
                             max_update_chunk_size=512 * 1024 * 1024,
                             max_indices=8,
                             update_interval_ms=20 * 60 * 1000,  # every 20 minutes
-                            vocab_size=300_000
+                            vocab_size=300_000,
+                            max_batch_size=16,
+                            prompt_tokens_in_datastore=3
                             )
 ```
 
@@ -116,10 +123,9 @@ RAM usage below 20 GB, which should be good and cheap enough).
 to go below the order of minutes, unless you are in specific settings and you know that the data might be reused
 immediately.
 * `vocab_size`: same as in Writer. Can be bigger than the actual size, but not smaller.
-* `prompt_tokens_in_datastore`: the last `prompt_tokens_in_datastore` tokens of each prompt will be added to the live
-datastore when it's updated, together with the self output.
-* `max_topk`: maximum breadth of each node in the final verification trie. Needed for compatibility with SGLang
-KV-cache allocation, not needed outside from SGLang.
+* `max_batch_size`: the maximum number of sequences that will be processed in parallel. Optional, will not crash if exceeded.
+* `prompt_tokens_in_datastore`: for the live datastore, how many tokens from the prompt to save together with the self output.
+
 
 #### How to use the input/self_output
 
@@ -175,11 +181,7 @@ reader.finish_all()
 
 ### Asynchronicity
 
-The `put` and `finish_sequence` methods run on separate threads. If you want them to be synchronous, use the `sync_put`
-and `sync_finish_sequence` methods.
-
-You can use the AsyncReader, which takes exactly the same parameters as the Reader, and makes also the `stream_put` method asycnhronous. This method is usually fast, and running it asynchronously requires additional synchronization
-that counters the benefit. In general, there should be no need to use it (but you can test what is better).
+The `put` and `finish_sequence` methods run on separate threads. If you want them to be synchronous, use the `sync_put` and `sync_finish_sequence` methods.
 
 ## Additional details
 
