@@ -1,307 +1,306 @@
-"""This script is not very flexible, because each dataset has its own structure.
-- If you want to create a datastore with only part of the datasets (e.g. only sharegpt) just comment out the lines.
-- If you want to add other datasets you can do it on top of already generated datastores. Just copy the datastore
-  on disk and provide the new path in the writer creation (if you also want to keep the original).
-- If you want to change model, change the model dir.
-- If you have your own tokenized data you can use the method create_datastore_from_npz().
-- Give the name of the datastore inside the writer "index_file_path".
+"""
+You can use this file to build a datastore starting from:
+- a hf dataset (you need to implement yourself the logic if it is not already available). You can take inspiration
+    from the available datasets
+- an npz file with tokenized answers coming from an LLM
+- a jsonl file with textual answers coming from an LLM
+You can use multiple datasets/files to build it in one call. You can extend the datastore after having built it with
+--extend-index.
+Please use the .idx extension for the index.
+
+Usage example:
+# python create_datastore.py \
+    --index_file_path /<some_folder>/qwen2.5_magpie_cn.idx \
+    --model /<path_to_model>/models--Qwen--Qwen2.5-7B-Instruct/snapshots/a09a35458c702b33eeacc393d103063234e8bc28/ \
+    --datasets magpie-qwen2-cn /<some_folder>/file_you_generated.npz
+
+If you pass a jsonl file, it should be of the format:
+
+{"text": "First line.\nSecond line."},
+{"text": "Another text with\nreal newlines."},
+
+You can use the function in this file, for example:
+answers = [
+    {"text": "First line.\nSecond line.", "title": "Demo"},
+    {"text": "Another text with\nreal newlines.", "title": "Demo 2"},
+]
+write_jsonl("answers.jsonl", answers)
+
+nohup python create_datastore.py --index_file_path /storage/users/mmarzollo/datastores/hitz-magpie_llama3.1-8B.idx \
+    --model /storage/datasets/huggingface/hub/models--meta-llama--Meta-Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659/ \
+    --datasets hitz-magpie-llama3.1-8b > datastore_creation.log 2>&1 &
 """
 
-from transformers import AutoTokenizer
 import sssd_speculator
-from datasets import load_dataset
 import os
 import numpy as np
 import time
 import argparse
-
-os.environ['CURL_CA_BUNDLE'] = ''
-
-
-def generate_complete_sharegpt_ultrachat(index_file_path):
-    writer = sssd_speculator.Writer(
-        index_file_path=index_file_path,
-        vocab_size=tokenizer.vocab_size+1,
-    )
-    dataset = load_dataset("Aeala/ShareGPT_Vicuna_unfiltered", split="train")
-    for _, conversations in enumerate(dataset):
-        for sample in conversations['conversations']:
-            token_list = tokenizer.encode(sample['value'])
-            writer.add_entry(token_list)
-
-    dataset = load_dataset("stingning/ultrachat", split="train")
-    for _, conversations in enumerate(dataset):
-        for sample in conversations['data']:
-            token_list = tokenizer.encode(sample)
-            writer.add_entry(token_list)
-
-    writer.finalize()
+import json
+from typing import Iterable, List, Union, Dict, Any
+from transformers import AutoTokenizer, PreTrainedTokenizerBase
+from datasets import load_dataset
+from pathlib import Path
 
 
-def sharegpt_ultrachat_magpie_responses(index_file_path):
-    writer = sssd_speculator.Writer(
-        index_file_path=index_file_path,
-        vocab_size=tokenizer.vocab_size+1,
-    )
 
-    def batch_tokenize_and_add(writer, batch):
-        if batch:  # Tokenize and write only if the batch is not empty
-            token_lists = tokenizer.batch_encode_plus(batch, add_special_tokens=True)['input_ids']
-            for token_list in token_lists:
-                writer.add_entry(token_list)
+# ---- Config ----
 
-    batch_size = 64
-    batch = []
-    # dataset = load_dataset("Aeala/ShareGPT_Vicuna_unfiltered", split="train", download_mode="reuse_dataset_if_exists")
-    # for _, conversations in enumerate(dataset):
-    #     for sample in conversations['conversations']:
-    #         if sample["from"] == "gpt":
-    #             batch.append(sample['value'])
-    #             if len(batch) >= batch_size:
-    #                 batch_tokenize_and_add(writer, batch)
-    #                 batch = []
+BATCH_SIZE_DEFAULT = 64
 
-    # dataset = load_dataset("stingning/ultrachat", split="train", download_mode="reuse_dataset_if_exists")
-    # for _, conversations in enumerate(dataset):
-    #     sample = conversations["data"]
-    #     for i in range(1, len(sample), 2):  # Responses are on odd indices (1, 3, 5, ...)
-    #         batch.append(sample[i])
-    #         if len(batch) >= batch_size:
-    #             batch_tokenize_and_add(writer, batch)
-    #             batch = []
+# Map short keywords -> (HF repo id, reader key)
+KEYWORD_MAP = {
+    # Magpie family (same reader)
+    "magpie-pro": ("Magpie-Align/Magpie-Pro-MT-300K-v0.1", "magpie"),
+    "magpie-air": ("Magpie-Align/Magpie-Air-MT-300K-v0.1", "magpie"),
+    "magpie-llama31-pro": ("Magpie-Align/Magpie-Llama-3.1-Pro-MT-500K-v0.1", "magpie"),
+    "magpie-qwen-coder": ("Magpie-Align/Magpie-Qwen2.5-Coder-Pro-300K-v0.1", "magpie"),
+    "magpie-qwen2-cn": ("Magpie-Align/Magpie-Qwen2-Pro-200K-Chinese", "magpie"),
+    "hitz-magpie-llama3.1-8b": ("HiTZ/Magpie-Llama-3.1-8B-Instruct-Filtered", "magpie"),
 
-    # dataset = load_dataset("Magpie-Align/Magpie-Pro-MT-300K-v0.1", split="train",
-    #                        download_mode="reuse_dataset_if_exists")
-    # for _, conversations in enumerate(dataset):
-    #     for sample in conversations['conversations']:
-    #         if sample["from"] == "gpt":
-    #             batch.append(sample['value'])
-    #             if len(batch) >= batch_size:
-    #                 batch_tokenize_and_add(writer, batch)
-    #                 batch = []
+    # ShareGPT / UltraChat
+    "sharegpt": ("Aeala/ShareGPT_Vicuna_unfiltered", "sharegpt"),
+    "ultrachat": ("stingning/ultrachat", "ultrachat"),
 
-    # dataset = load_dataset("Magpie-Align/Magpie-Air-MT-300K-v0.1", split="train",
-    #                        download_mode="reuse_dataset_if_exists")
-    # for _, conversations in enumerate(dataset):
-    #     for sample in conversations['conversations']:
-    #         if sample["from"] == "gpt":
-    #             batch.append(sample['value'])
-    #             if len(batch) >= batch_size:
-    #                 batch_tokenize_and_add(writer, batch)
-    #                 batch = []
+    # DeepSeek-R1 family
+    "deepseek-r1-dolphin": ("DKYoon/dolphin-r1-deepseek-filtered", "deepseek_dolphin"),
+    "deepseek-r1-distill": ("tuanha1305/DeepSeek-R1-Distill", "deepseek_distill"),
+    "deepseek-r1-chinese": ("Congliu/Chinese-DeepSeek-R1-Distill-data-110k-SFT", "deepseek_chinese"),
 
-    dataset = load_dataset("Magpie-Align/Magpie-Llama-3.1-Pro-MT-500K-v0.1", split="train",
-                           download_mode="reuse_dataset_if_exists")
-    for _, conversations in enumerate(dataset):
-        for sample in conversations['conversations']:
-            if sample["from"] == "gpt":
-                batch.append(sample['value'])
-                if len(batch) >= batch_size:
-                    batch_tokenize_and_add(writer, batch)
-                    batch = []
+    # The Pile (validation + test)
+    "pile-val": ("monology/pile-uncopyrighted", "pile"),
+}
 
-    dataset = load_dataset("stingning/ultrachat", split="train", download_mode="reuse_dataset_if_exists")
-    for _, conversations in enumerate(dataset):
-        sample = conversations["data"]
-        for i in range(1, len(sample), 2):  # Responses are on odd indices (1, 3, 5, ...)
-            batch.append(sample[i])
-            if len(batch) >= batch_size:
-                batch_tokenize_and_add(writer, batch)
-                batch = []
-                
-    if batch:   # some samples where not inserted yet
-        batch_tokenize_and_add(writer, batch)
-
-    writer.finalize()
-
-    
-
-def magpie_qwen_coder_responses(index_file_path):
-    writer = sssd_speculator.Writer(
-        index_file_path=index_file_path,
-        vocab_size=tokenizer.vocab_size+1,
-    )
-
-    def batch_tokenize_and_add(writer, batch):
-        if batch:  # Tokenize and write only if the batch is not empty
-            token_lists = tokenizer.batch_encode_plus(batch, add_special_tokens=True)['input_ids']
-            for token_list in token_lists:
-                writer.add_entry(token_list)
-
-    batch_size = 64
-    batch = []
-
-    dataset = load_dataset("Magpie-Align/Magpie-Qwen2.5-Coder-Pro-300K-v0.1", split="train",
-                           download_mode="reuse_dataset_if_exists")
-    for _, conversations in enumerate(dataset):
-        for sample in conversations['conversations']:
-            if sample["from"] == "gpt":
-                batch.append(sample['value'])
-                if len(batch) >= batch_size:
-                    batch_tokenize_and_add(writer, batch)
-                    batch = []
-                
-    if batch:   # some samples where not inserted yet
-        batch_tokenize_and_add(writer, batch)
-
-    writer.finalize()
+# ---- Tokenization helpers ----
 
 
-def add_pile_validation(index_file_path):
-    writer = sssd_speculator.Writer(
-        index_file_path=index_file_path,
-        vocab_size=tokenizer.vocab_size+1,
-    )
-    dataset = load_dataset("monology/pile-uncopyrighted",
-                           split="validation", streaming=True)
-    for _, sample in enumerate(dataset):
-        sentence = sample['text']
-        token_list = tokenizer.encode(sentence)
+def batch_tokenize_and_add(writer, texts: List[str], tokenizer: PreTrainedTokenizerBase):
+    if not texts:
+        return
+    token_lists = tokenizer.batch_encode_plus(texts, add_special_tokens=True)['input_ids']
+    for token_list in token_lists:
         writer.add_entry(token_list)
 
-    dataset = load_dataset("monology/pile-uncopyrighted",
-                           split="test", streaming=True)
-    for _, sample in enumerate(dataset):
-        sentence = sample['text']
-        token_list = tokenizer.encode(sentence)
-        writer.add_entry(token_list)
 
-    writer.finalize()
-
-## DEEPSEEEK R1
-
-
-def deepseek_r1(index_file_path):
-    writer = sssd_speculator.Writer(
-        index_file_path=index_file_path,
-        vocab_size=132000,
-    )
-
-    def batch_tokenize_and_add(writer, batch):
-        if batch:  # Tokenize and write only if the batch is not empty
-            token_lists = tokenizer.batch_encode_plus(batch, add_special_tokens=True)['input_ids']
-            for token_list in token_lists:
-                writer.add_entry(token_list)
-
-    batch_size = 64
+def write_texts(writer, text_iter: Iterable[str], batch_size: int, tokenizer: PreTrainedTokenizerBase):
     batch = []
-    dataset = load_dataset("DKYoon/dolphin-r1-deepseek-filtered", split="train", download_mode="reuse_dataset_if_exists")
-    for _, conversations in enumerate(dataset):
-        for sample in conversations['messages']:
-            if sample["role"] == "assistant":
-                batch.append(sample['content'])
-                if len(batch) >= batch_size:
-                    batch_tokenize_and_add(writer, batch)
-                    batch = []
-
-    dataset = load_dataset("tuanha1305/DeepSeek-R1-Distill", split="train", download_mode="reuse_dataset_if_exists")
-    for _, conversations in enumerate(dataset):
-        sample = "<think>\n" + conversations["content"] + "\n</think>\n\n" + conversations["reasoning_content"]
-        batch.append(sample)
+    for t in text_iter:
+        if t is None:
+            continue
+        batch.append(t)
         if len(batch) >= batch_size:
-            batch_tokenize_and_add(writer, batch)
+            batch_tokenize_and_add(writer, batch, tokenizer)
             batch = []
+    if batch:
+        batch_tokenize_and_add(writer, batch, tokenizer)
+
+# ---- Readers ----
+# All Magpie datasets share the same structure -> one reader reused.
 
 
-    dataset = load_dataset("Congliu/Chinese-DeepSeek-R1-Distill-data-110k-SFT", split="train",
-                           download_mode="reuse_dataset_if_exists")
-    for _, conversations in enumerate(dataset):
-        sample = conversations["output"]
-        batch.append(sample)
-        if len(batch) >= batch_size:
-            batch_tokenize_and_add(writer, batch)
-            batch = []
-
-    if batch:   # some samples where not inserted yet
-        batch_tokenize_and_add(writer, batch)
-
-    writer.finalize()
-
-### USE YOUR OWN DATA ###
-
-def load_npz(filepath):
-    generated_answers = np.load(filepath)
-    generated_arrays = []
-    for vec in generated_answers:
-        generated_arrays.append(list(generated_answers[vec].astype(np.uint16)))
-
-    return generated_arrays
+def iter_magpie(repo: str) -> Iterable[str]:
+    ds = load_dataset(repo, split="train", download_mode="reuse_dataset_if_exists")
+    for row in ds:
+        for m in row["conversations"]:
+            if m.get("from") == "gpt":
+                yield m["value"]
 
 
-def create_datastore_from_npz(data_path, index_file_path):
-    # you can run - create_datastore_from_npz("/scratch/pia_datastores/gsm8k_Llama-2-7b-chat-hf_first_300.npz")
+def iter_sharegpt(repo: str) -> Iterable[str]:
+    ds = load_dataset(repo, split="train", download_mode="reuse_dataset_if_exists")
+    for row in ds:
+        for m in row["conversations"]:
+            if m.get("from") == "gpt":
+                yield m["value"]
+
+
+def iter_ultrachat(repo: str) -> Iterable[str]:
+    ds = load_dataset(repo, split="train", download_mode="reuse_dataset_if_exists")
+    for row in ds:
+        msgs = row["data"]
+        # assistant responses at odd indices
+        for i in range(1, len(msgs), 2):
+            yield msgs[i]
+
+
+def iter_pile(repo: str) -> Iterable[str]:
+    # stream validation and test
+    for split in ("validation", "test"):
+        ds = load_dataset(repo, split=split, streaming=True)
+        for ex in ds:
+            yield ex["text"]
+
+
+def iter_deepseek_dolphin(repo: str) -> Iterable[str]:
+    ds = load_dataset(repo, split="train", download_mode="reuse_dataset_if_exists")
+    for row in ds:
+        for m in row["messages"]:
+            if m.get("role") == "assistant":
+                yield m["content"]
+
+
+def iter_deepseek_distill(repo: str) -> Iterable[str]:
+    ds = load_dataset(repo, split="train", download_mode="reuse_dataset_if_exists")
+    for row in ds:
+        # Combine content + reasoning with think tags
+        yield f"<think>\n{row['content']}\n</think>\n\n{row['reasoning_content']}"
+
+
+def iter_deepseek_chinese(repo: str) -> Iterable[str]:
+    ds = load_dataset(repo, split="train", download_mode="reuse_dataset_if_exists")
+    for row in ds:
+        yield row["output"]
+
+
+def load_npz_sequences(filepath: str) -> Iterable[List[int]]:
+    data = np.load(filepath)
+    for key in data:
+        yield data[key].tolist()
+
+
+# ---- JSONL helpers ----
+def iter_jsonl_texts(path: str) -> Iterable[str]:
+    """
+    Yields obj["text"] from a JSONL file.
+    Skips rows missing the field or not a string.
+    """
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict) and "text" in obj and isinstance(obj["text"], str):
+                yield obj["text"]
+
+
+def write_jsonl(path: str, entries: Iterable[Union[str, Dict[str, Any]]]):
+    """
+    Writes entries to JSONL.
+    - If entry is a str, it becomes {text_field: entry}.
+    - If entry is a dict, it's written as-is.
+    """
+    with open(path, "w", encoding="utf-8") as f:
+        for e in entries:
+            if isinstance(e, str):
+                obj = {"text": e}
+            elif isinstance(e, dict):
+                obj = e
+            else:
+                continue
+            f.write(json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+READERS = {
+    "magpie": iter_magpie,
+    "sharegpt": iter_sharegpt,
+    "ultrachat": iter_ultrachat,
+    "pile": iter_pile,
+    "deepseek_dolphin": iter_deepseek_dolphin,
+    "deepseek_distill": iter_deepseek_distill,
+    "deepseek_chinese": iter_deepseek_chinese,
+}
+
+# ---- Resolver ----
+
+
+def resolve_item(item: str):
+    """
+    Returns a spec dict:
+      - NPZ: {"kind": "npz", "path": ...}
+      - JSONL: {"kind": "jsonl", "path": ...}
+      - Known keyword: {"kind":"hf", "repo":..., "reader":...}
+      - Direct HF repo (optional): if it's a Magpie repo, reuse the Magpie reader.
+    """
+    low = item.lower()
+    if low.endswith(".npz"):
+        return {"kind": "npz", "path": item}
+    if low.endswith(".jsonl"):
+        return {"kind": "jsonl", "path": item}
+
+    if item in KEYWORD_MAP:
+        repo, reader = KEYWORD_MAP[item]
+        return {"kind": "hf", "repo": repo, "reader": reader}
+
+    if "/" in item:  # looks like a HF repo id
+        reader = "magpie" if item.startswith("Magpie-Align/") else None
+        if reader is None:
+            raise ValueError(
+                f"Unknown HF repo '{item}'. Add a keyword mapping or use a supported repo."
+            )
+        return {"kind": "hf", "repo": item, "reader": reader}
+
+    raise ValueError(f"Unknown dataset keyword or path: '{item}'")
+
+# ---- Build ----
+
+
+def build_index(index_file_path: str, datasets: List[str], batch_size: int, tokenizer: PreTrainedTokenizerBase):
     writer = sssd_speculator.Writer(
         index_file_path=index_file_path,
-        vocab_size=tokenizer.vocab_size+1,
+        vocab_size=tokenizer.vocab_size + 1,
     )
-    if data_path.endswith(".npz"):
-        dataset = load_npz(data_path)[200:]
-    for sample in dataset:
-        writer.add_entry(sample)
+    for item in datasets:
+        spec = resolve_item(item)
+        print(f"→ Processing {item} …")
+        if spec["kind"] == "npz":
+            for seq in load_npz_sequences(spec["path"]):
+                writer.add_entry(seq)
+        elif spec["kind"] == "jsonl":
+            write_texts(writer, iter_jsonl_texts(spec["path"]), batch_size, tokenizer)
+        else:
+            reader_fn = READERS[spec["reader"]]
+            write_texts(writer, reader_fn(spec["repo"]), batch_size, tokenizer)
     writer.finalize()
+
+# ---- CLI ----
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Datastore creation utility")
+    parser = argparse.ArgumentParser(description="Datastore creation utility (keyword-driven).")
+    parser.add_argument("--index_file_path", type=str, required=True, help="Path to the output index file")
+    parser.add_argument("--model", type=str, required=True, help="Tokenizer/model path or name")
     parser.add_argument(
-        "--mode",
-        choices=[
-            "sharegpt_ultrachat_magpie_responses",
-            "deepseek_r1",
-            "add_pile_validation",
-            "generate_complete_sharegpt_ultrachat",
-            "create_datastore_from_npz"
-        ],
+        "--datasets",
+        nargs="+",
         required=True,
-        help="Which dataset creation mode to run"
+        help=("Space-separated list of dataset keywords, .npz files, and/or .jsonl files. "
+          "Keywords: " + ", ".join(sorted(KEYWORD_MAP.keys()))),
     )
+    parser.add_argument("--batch_size", type=int, default=BATCH_SIZE_DEFAULT, help="Batch size for tokenization")
     parser.add_argument(
-        "--index_file_path",
-        type=str,
-        required=True,
-        help="Path to the output index file"
+        "--extend-index",
+        action="store_true",
+        help="If set and index_file_path exists, append new entries to the existing index."
     )
-    parser.add_argument(
-        "--data_path",
-        type=str,
-        default=None,
-        help="Path to .npz data file (required for create_datastore_from_npz)"
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        help="Path to the model directory"
-    )
-
     args = parser.parse_args()
 
-    global tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model)
 
-    s_time = time.time()
-
+    extended = False
     if os.path.exists(args.index_file_path):
-        print(f"Index file {args.index_file_path} already exists. If you want to regenerate it, please remove it first")
-        return
+        if args.extend_index:
+            print(f"Extending existing index: {args.index_file_path}")
+            extended = True
+        else:
+            print(
+                f"Index file {args.index_file_path} already exists.\n"
+                f"To extend it, pass --extend-index. To rebuild, delete the file first."
+            )
+            return
 
-    os.makedirs(os.path.dirname(args.index_file_path), exist_ok=True)
-    if args.mode == "sharegpt_ultrachat_magpie_responses":
-        sharegpt_ultrachat_magpie_responses(args.index_file_path)
-    elif args.mode == "deepseek_r1":
-        deepseek_r1(args.index_file_path)
-    elif args.mode == "add_pile_validation":
-        add_pile_validation(args.index_file_path)
-    elif args.mode == "generate_complete_sharegpt_ultrachat":
-        generate_complete_sharegpt_ultrachat(args.index_file_path)
-    elif args.mode == "create_datastore_from_npz":
-        if not args.data_path:
-            raise ValueError("You must provide --data_path for create_datastore_from_npz mode")
-        create_datastore_from_npz(args.data_path, args.index_file_path)
+    os.makedirs(os.path.dirname(args.index_file_path) or ".", exist_ok=True)
+
+    start = time.time()
+    build_index(args.index_file_path, args.datasets, batch_size=args.batch_size, tokenizer=tokenizer)
+    minutes = (time.time() - start) / 60.0
+    if not extended:
+        print(f"Index file {args.index_file_path} created and written to disk.")
     else:
-        raise ValueError("Unknown mode")
-    e_time = time.time()
-    time_taken = (e_time - s_time) / 60
-    print(f"Time taken: {time_taken:.2f} minutes")
+        print(f"Index file {args.index_file_path} extended.")
+    print(f"Time taken: {minutes:.2f} minutes")
 
 if __name__ == "__main__":
     main()
