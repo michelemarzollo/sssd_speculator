@@ -4,7 +4,6 @@ import sys
 import os
 import argparse
 import sssd_speculator
-import draftretriever
 
 from transformers import AutoTokenizer
 from typing import List, Tuple, Dict
@@ -13,11 +12,10 @@ from collections import Counter
 from generate_offline_data import model_path_dict
 from create_datastores import lookahead_cache_warm_up, get_tokenized_data_path
 import torch
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), \
-                                                '../PainlessInferenceAcceleration/lookahead')))
-
+import draftretriever
+import draftretriever_adapted
 from lookahead.common.lookahead_cache import LookaheadCache
+
 
 
 PIA_QUERY_LENGTH = 2
@@ -38,22 +36,12 @@ def load_npz(filepath):
 
 
 def get_branch_len_from_decoding_len(model_name, decoding_length):
-    if model_name == "Llama-2-7b-chat-hf":
-        if decoding_length <= 4:
-            branch_length = decoding_length - 1
-        elif decoding_length <= 8:
-            branch_length = 5
-        else:
-            branch_length = 6
-    elif model_name == "Llama-3-8B-Instruct":
-        if decoding_length <= 4:
-            branch_length = decoding_length - 1
-        elif decoding_length <= 8:
-            branch_length = 4
-        else:
-            branch_length = 5
-
-    return branch_length
+    if decoding_length <= 4:
+        return decoding_length - 1
+    elif decoding_length <= 8:
+        return 5
+    else:
+        return 6
 
 
 #### SPECULATORS ####
@@ -104,7 +92,6 @@ class PIASpeculator(ABCSpeculator):
         decoding_ids = []
         tree_attn_mask_list = []
 
-        # From 'vllm/core/speculate_manager.py'
         for seq_id, input_toks in zip(seq_ids, inputs):
             speculate_token_ids = input_toks[-self.prefix_len:]
             # min_input_size and min_output_size are taken from the bat_get method, which is normally used in
@@ -233,6 +220,58 @@ class RESTSpeculator(ABCSpeculator):
         pass
 
 
+class AdaptedRESTSpeculator(ABCSpeculator):
+    def __init__(self, prefix_len, datastore_path):
+        super().__init__(prefix_len)
+        s_time = time.time()
+        print("Starting to load the datastore...")
+        print(datastore_path)
+        self.datastore = draftretriever_adapted.Reader(
+            index_file_path=datastore_path,
+        )
+        print(
+            f"Datatore loaded. Time taken: {int(time.time()-s_time)} seconds.")
+
+    def get_candidates_and_mask(self, inputs, speculate_len, branch_len, seq_ids):
+        prefixes = []
+        for input_toks in inputs:
+            prefixes.append(input_toks[-self.prefix_len:])
+
+        candidates_list = []
+        decoding_masks = []
+
+        for token_ids in prefixes:
+            # Here i add -1 to the decoding length, because in PIA the decoding length includes the last
+            # added token, while rest returns the number of elements required
+            try:
+                candidates, mask, depths = self.datastore.search(
+                    token_ids,
+                    k=5000,
+                    choices=speculate_len-1,
+                    long=branch_len)
+
+                candidates_list.append(candidates)
+                if not mask:
+                    decoding_masks.append(np.empty((0, 0), dtype=bool))
+                else:
+                    mask = np.array(mask, dtype=bool)[1:, 1:]
+                    decoding_masks.append(mask)
+            except ValueError as e:
+                print(e)
+                candidates_list.append([token_ids[-1]])
+                decoding_masks.append(np.empty((0, 0), dtype=bool))
+
+        return candidates_list, decoding_masks
+
+    def put(self, prompt, idx):
+        pass
+
+    def stream_put(self, next_token_list, idx):
+        pass
+
+    def finish_sequence(self, idx):
+        pass
+
 #### EVALUATION ####
 
 def convert_rest_mask(mask):
@@ -249,7 +288,7 @@ def get_cartesian_candidates(output_ids, decoding_masks):
     for output_id, _decoding_mask in zip(output_ids, decoding_masks):
         if _decoding_mask.dtype == torch.int64:
             decoding_mask = convert_rest_mask(_decoding_mask).numpy()
-        elif _decoding_mask.dtype == np.bool:
+        elif _decoding_mask.dtype == bool:
             decoding_mask = _decoding_mask
         else:   # list of lists
             decoding_mask = np.array(_decoding_mask, dtype=bool)[1:, 1:]
@@ -418,25 +457,30 @@ def measure_hit_rate(args):
         raise KeyError(f"Key '{args.model_name}' not found in model_path_dict")
     tokenizer = AutoTokenizer.from_pretrained(model_path_dict[args.model_name])
 
-    prompts_path = args.tensors_dir + f"/inputs_{args.model_name}.npz"
-    answers_path = args.tensors_dir + f"/outputs_{args.model_name}.npz"
+    prompts = []
+    answers = []
 
-    print(f"Testing data: prompts: {prompts_path}, answers: {answers_path}")
+    for dataset_name in args.dataset_names:
+        prompts_path = args.tensors_dir + f"/inputs_{args.model_name}_{dataset_name}.npz"
+        answers_path = args.tensors_dir + f"/outputs_{args.model_name}_{dataset_name}.npz"
 
-    # Load the evaluation data
-    if prompts_path.endswith(".npz"):
-        prompts = load_npz(prompts_path)
-        print(f"Number of tokens: {sum([len(arr) for arr in prompts])}")
-    else:
-        raise NotImplementedError(
-            "Please provide the prompts already tokenized in an .npz file")
+        print(f"Testing data: prompts: {prompts_path}, answers: {answers_path}")
 
-    if answers_path.endswith(".npz"):
-        answers = load_npz(answers_path)
-        print(f"Number of tokens: {sum([len(arr) for arr in answers])}")
-    else:
-        raise NotImplementedError(
-            "Please provide the answers already tokenized in an .npz file")
+        # Load the evaluation data
+        if prompts_path.endswith(".npz"):
+            prompts.extend(load_npz(prompts_path))
+            print(f"Number of prompts: {len(prompts)}")
+            print(f"Number of tokens: {sum([len(arr) for arr in prompts])}")
+        else:
+            raise NotImplementedError(
+                "Please provide the prompts already tokenized in an .npz file")
+
+        if answers_path.endswith(".npz"):
+            answers.extend(load_npz(answers_path))
+            print(f"Number of tokens: {sum([len(arr) for arr in answers])}")
+        else:
+            raise NotImplementedError(
+                "Please provide the answers already tokenized in an .npz file")
 
     print("Num prompts: ", len(prompts))
 
@@ -452,6 +496,12 @@ def measure_hit_rate(args):
             else:
                 datastore_path = args.datastore_path
             speculator = RESTSpeculator(SSSD_QUERY_LENGTH, datastore_path)
+        elif speculator_type == 'rest_adapted':
+            if args.datastore_path is None:
+                datastore_path = f"{args.storage_dir}/sssd_sharegpt_{args.model_name}.idx"
+            else:
+                datastore_path = args.datastore_path
+            speculator = AdaptedRESTSpeculator(SSSD_QUERY_LENGTH, datastore_path)
         elif speculator_type == 'sssd':
             if args.datastore_path is None:
                 datastore_path = f"{args.storage_dir}/sssd_sharegpt_{args.model_name}.idx"
@@ -545,16 +595,17 @@ def measure_hit_rate(args):
 def main():
     parser = argparse.ArgumentParser(description='Evaluate edl')
 
-    # "Llama-2-7b-chat-hf" "Llama-3-8B-Instruct"
-    parser.add_argument('--model_name', default="Llama-2-7b-chat-hf")
+    parser.add_argument('--model_name', default="Llama-3.1-8B-Instruct")
     parser.add_argument('--batch_size', type=int, default=1)
     parser.add_argument('--decoding_lengths', nargs='+',
                         type=int, default=[2, 4, 8, 12, 16, 24, 32])
+    parser.add_argument('--dataset_names', nargs='+', type=str,
+                        default=['mt-bench', 'dolly-15k', 'gsm8k'])
     # Possible arguments: 'sssd', 'pia', 'rest', 'updated_rest', 'my_rest'
     parser.add_argument('--speculator_types', nargs='+',
                         type=str, default=["sssd", "pia"])
     parser.add_argument('--tensors_dir', type=str,
-                        default="./offline_speculation_data_old")
+                        default="./offline_speculation_data")
     parser.add_argument('--storage_dir', type=str,
                         default="./specdec_data/sssd_datastores")
     # if provided, has precedence over --storage_dir

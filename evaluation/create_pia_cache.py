@@ -5,15 +5,19 @@ You can use this file to build a datastore starting from:
 - an npz file with tokenized answers coming from an LLM
 - a jsonl file with textual answers coming from an LLM
 You can use multiple datasets/files to build it in one call. You can extend the datastore after having built it with
---extend-index.
-Please use the .idx extension for the index.
+--extend-cache.
 
 Usage example:
-python create_datastore.py \
-    --index_file_path /storage/users/mmarzollo/datastores/hitz-magpie-llama3.1-8B_magpie-llama-3.1-MT-500_plus_german.idx \
+python create_pia_cache.py \
+    --cache_path /<some_folder>/qwen2.5_magpie_cn.idx \
+    --model /<path_to_model>/models--Qwen--Qwen2.5-7B-Instruct/snapshots/a09a35458c702b33eeacc393d103063234e8bc28/ \
+    --datasets magpie-qwen2-cn /<some_folder>/file_you_generated.npz
+
+python create_pia_cache.py \
+    --cache_path /storage/users/mmarzollo/datastores/pia_hitz-magpie-llama3.1-8B_magpie-llama-3.1-MT-500.json \
     --model /storage/datasets/huggingface/hub/models--meta-llama--Meta-Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659 \
-    --datasets sharegpt-de synthia-german \
-    --extend-index
+    --datasets hitz-magpie-llama3.1-8b magpie-llama31-pro \
+    --extend-cache
 
 If you pass a jsonl file, it should be of the format:
 
@@ -27,26 +31,27 @@ answers = [
 ]
 write_jsonl("answers.jsonl", answers)
 
-nohup python create_datastore.py --index_file_path /storage/users/mmarzollo/datastores/hitz-magpie_llama3.1-8B.idx \
+nohup python create_datastore.py --cache_path /storage/users/mmarzollo/datastores/hitz-magpie_llama3.1-8B.idx \
     --model /storage/datasets/huggingface/hub/models--meta-llama--Meta-Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659/ \
     --datasets hitz-magpie-llama3.1-8b > datastore_creation.log 2>&1 &
 """
 
-import sssd_speculator
 import os
 import numpy as np
 import time
 import argparse
 import json
+import pickle
 from typing import Iterable, List, Union, Dict, Any
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from datasets import load_dataset
-
+from pathlib import Path
+from lookahead.common.lookahead_cache import LookaheadCache
 
 
 # ---- Config ----
 
-BATCH_SIZE_DEFAULT = 512
+BATCH_SIZE_DEFAULT = 64
 
 # Map short keywords -> (HF repo id, reader key)
 KEYWORD_MAP = {
@@ -75,25 +80,38 @@ KEYWORD_MAP = {
 # ---- Tokenization helpers ----
 
 
-def batch_tokenize_and_add(writer, texts: List[str], tokenizer: PreTrainedTokenizerBase):
+def batch_tokenize_and_add(cache, texts: List[str], tokenizer: PreTrainedTokenizerBase, branch_len: int):
     if not texts:
         return
     token_lists = tokenizer.batch_encode_plus(texts, add_special_tokens=True)['input_ids']
-    for token_list in token_lists:
-        writer.add_entry(token_list)
+    for idx, token_list in enumerate(token_lists):
+        if (idx + 1) % 50 == 0:
+            cache.put(token_list, branch_length=branch_len + 1, mode='output',
+                        idx=-1, final=True)
+        else:
+            cache.put(token_list, branch_length=branch_len + 1, mode='output',
+                        idx=-1)
 
 
-def write_texts(writer, text_iter: Iterable[str], batch_size: int, tokenizer: PreTrainedTokenizerBase):
+def write_texts(cache, text_iter: Iterable[str], batch_size: int, tokenizer: PreTrainedTokenizerBase, branch_len: int):
+    log_at = 10_000
+    num_big_chunks = 1
+    num_batches = 0
+    ts = time.time()
     batch = []
     for t in text_iter:
         if t is None:
             continue
         batch.append(t)
         if len(batch) >= batch_size:
-            batch_tokenize_and_add(writer, batch, tokenizer)
+            batch_tokenize_and_add(cache, batch, tokenizer, branch_len)
             batch = []
+            num_batches += 1
+        if num_batches * BATCH_SIZE_DEFAULT >= num_big_chunks * log_at:
+            print(f'warmup:{num_batches * BATCH_SIZE_DEFAULT}, elapse:{round(time.time() - ts, 1)}s')
+            num_big_chunks += 1
     if batch:
-        batch_tokenize_and_add(writer, batch, tokenizer)
+        batch_tokenize_and_add(cache, batch, tokenizer, branch_len)
 
 # ---- Readers ----
 # All Magpie datasets share the same structure -> one reader reused.
@@ -244,30 +262,40 @@ def resolve_item(item: str):
 # ---- Build ----
 
 
-def build_index(index_file_path: str, datasets: List[str], batch_size: int, tokenizer: PreTrainedTokenizerBase):
-    writer = sssd_speculator.Writer(
-        index_file_path=index_file_path,
-        vocab_size=tokenizer.vocab_size + 1,
-    )
+def build_cache(cache_path: str, datasets: List[str], batch_size: int, tokenizer: PreTrainedTokenizerBase,
+                branch_len: int, extend_cache: bool):
+    lookahead_cache = LookaheadCache()
+    if extend_cache:
+        lookahead_cache.load_mem(cache_path)
     for item in datasets:
         spec = resolve_item(item)
         print(f"→ Processing {item} …")
         if spec["kind"] == "npz":
-            for seq in load_npz_sequences(spec["path"]):
-                writer.add_entry(seq)
+            ts = time.time()
+            for idx, seq in enumerate(load_npz_sequences(spec["path"])):
+                if (idx + 1) % 50 == 0:
+                    lookahead_cache.put(seq, branch_length=branch_len + 1, mode='output',
+                                idx=-1, final=True)
+                else:
+                    lookahead_cache.put(seq, branch_length=branch_len + 1, mode='output',
+                                idx=-1)
+                if (idx + 1) % 10_000 == 0:
+                    print(f'warmup:{idx + 1}, elapse:{round(time.time() - ts, 1)}s')
         elif spec["kind"] == "jsonl":
-            write_texts(writer, iter_jsonl_texts(spec["path"]), batch_size, tokenizer)
+            write_texts(lookahead_cache, iter_jsonl_texts(spec["path"]), batch_size, tokenizer, branch_len)
         else:
             reader_fn = READERS[spec["reader"]]
-            write_texts(writer, reader_fn(spec["repo"]), batch_size, tokenizer)
-    writer.finalize()
+            write_texts(lookahead_cache, reader_fn(spec["repo"]), batch_size, tokenizer, branch_len)
+    # Clean up
+    lookahead_cache.put([], branch_length=1, mode='output', idx=-1, final=True)
+    lookahead_cache.save_mem(cache_path)
 
 # ---- CLI ----
 
 
 def main():
     parser = argparse.ArgumentParser(description="Datastore creation utility (keyword-driven).")
-    parser.add_argument("--index_file_path", type=str, required=True, help="Path to the output index file")
+    parser.add_argument("--cache_path", type=str, required=True, help="Path to the output cache file")
     parser.add_argument("--model", type=str, required=True, help="Tokenizer/model path or name")
     parser.add_argument(
         "--datasets",
@@ -278,35 +306,41 @@ def main():
     )
     parser.add_argument("--batch_size", type=int, default=BATCH_SIZE_DEFAULT, help="Batch size for tokenization")
     parser.add_argument(
-        "--extend-index",
+        "--extend-cache",
         action="store_true",
-        help="If set and index_file_path exists, append new entries to the existing index."
+        help="If set and cache_path exists, append new entries to the existing cache."
     )
+    parser.add_argument("--branch-len", type=int, default=8)
     args = parser.parse_args()
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=True)
+    tokenizer = AutoTokenizer.from_pretrained(args.model)
 
     extended = False
-    if os.path.exists(args.index_file_path):
-        if args.extend_index:
-            print(f"Extending existing index: {args.index_file_path}")
+    if os.path.exists(args.cache_path):
+        if args.extend_cache:
+            print(f"Extending existing cache: {args.cache_path}")
             extended = True
         else:
             print(
-                f"Index file {args.index_file_path} already exists.\n"
-                f"To extend it, pass --extend-index. To rebuild, delete the file first."
+                f"Cache file {args.cache_path} already exists.\n"
+                f"To extend it, pass --extend-cache. To rebuild, delete the file first."
             )
             return
 
-    os.makedirs(os.path.dirname(args.index_file_path) or ".", exist_ok=True)
+    os.makedirs(os.path.dirname(args.cache_path) or ".", exist_ok=True)
 
     start = time.time()
-    build_index(args.index_file_path, args.datasets, batch_size=args.batch_size, tokenizer=tokenizer)
+    build_cache(args.cache_path,
+                args.datasets,
+                batch_size=args.batch_size,
+                tokenizer=tokenizer,
+                branch_len=args.branch_len,
+                extend_cache=extended)
     minutes = (time.time() - start) / 60.0
     if not extended:
-        print(f"Index file {args.index_file_path} created and written to disk.")
+        print(f"cache file {args.cache_path} created and written to disk.")
     else:
-        print(f"Index file {args.index_file_path} extended.")
+        print(f"cache file {args.cache_path} extended.")
     print(f"Time taken: {minutes:.2f} minutes")
 
 if __name__ == "__main__":

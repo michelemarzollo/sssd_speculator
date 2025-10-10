@@ -439,7 +439,7 @@ def test_sglang_structure(initialize_index):
     assert output_ids == [[0, 1, 2, 3, 3, 4, 4, 7, 4, 7, 8, 9, 9]]
     assert depths == [[0, 1, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 6]]
     assert retrieve_next_token == [[1, 2, 4, 6, 7, -1, 9, 10, -1, 11, 12, -1, -1]]
-    assert retrieve_next_sibling == [[-1, -1, 3, -1, 5, 6, -1, 8, 9, -1, 11, -1, -1]]
+    assert retrieve_next_sibling == [[-1, -1, 3, -1, 5, -1, -1, 8, -1, -1, -1, -1, -1]]
 
 
 def test_sglang_max_topk():

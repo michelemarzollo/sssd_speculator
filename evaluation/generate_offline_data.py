@@ -114,18 +114,19 @@ def generate_data(args):
     print(terminators)
     print(tokenizer.decode(terminators))
 
-    # # For llama you might need
-    # tokenizer.add_special_tokens({"pad_token": "<PAD>"})
-    # model.resize_token_embeddings(model.config.vocab_size + 1)
-    # terminators = [tokenizer.eos_token_id, tokenizer.convert_tokens_to_ids(
-    #     '<|eot_id|>')]   # ok also for llama2, the second is <unk>
-
-    unpadded_inputs = []
-    unpadded_outputs = []
+    # For llama you might need
+    if "llama" in model_name.lower():
+        tokenizer.add_special_tokens({"pad_token": "<PAD>"})
+        model.resize_token_embeddings(model.config.vocab_size + 1)
+        terminators = [tokenizer.eos_token_id, tokenizer.convert_tokens_to_ids(
+            '<|eot_id|>')]   # ok also for llama2, the second is <unk>
 
     batch_size = args.batch_size
     for dataset_name in args.dataset_names:
         print(f"\nStarting dataset {dataset_name}")
+
+        unpadded_inputs = []
+        unpadded_outputs = []
         prompt_generator = PromptGenerator(
             dataset_name, args.datasets_dir, tokenizer, model_name, test_device)
 
@@ -175,12 +176,12 @@ def generate_data(args):
 def main():
     parser = argparse.ArgumentParser(description='Evaluate edl')
 
-    parser.add_argument('--model_name', default="Llama-2-7b-chat-hf")
+    parser.add_argument('--model_name', default="Llama-3.1-8B-Instruct")
     parser.add_argument('--dataset_names', nargs='+', type=str,
                         default=['mt-bench', 'dolly-15k', 'gsm8k'])
     parser.add_argument('--datasets_dir', type=str,
                         default="./datasets/")
-    parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--max_new_tokens', type=int, default=1024)
     parser.add_argument('--output_dir', type=str,
                         default="./offline_speculation_data")
@@ -190,6 +191,7 @@ def main():
     # Store the datasets on disk, if not present
     for dataset_name in args.dataset_names:
         dataset_dir = os.path.join(args.datasets_dir, dataset_name)
+
         if not os.path.exists(dataset_dir):
             os.makedirs(dataset_dir)
             try:

@@ -201,13 +201,8 @@ Reader::Reader(const std::string &indexFilePath, int stopToken, int maxSearchEnt
 
         this->hasDatastore = true;
         // Define how many elements per index to use for retrieval
-        size_t totalElements = 0;
-        for (auto &idx : this->indexes) {
-            totalElements += idx->data.size();
-        }
-        for (auto &idx : this->indexes) {
-            idx->maxSearchEntries = std::round(static_cast<float>(maxSearchEntries) * idx->data.size() / totalElements);
-        }
+        SetSearchEntriesPerIdx();
+        
     } else {
         // No datastore, input only
         if (!liveDatastoreUpdates) {
@@ -644,14 +639,11 @@ void Reader::UpdateAttributes(
     int stopToken, int maxSearchEntries, int promptBranchLength, int promptPrefixLength, int maxOutPutSize, int inputTokensToPutInSelfOutput)
 {
     this->stopToken = stopToken;
+
     // Define how many elements per index to use for retrieval
-    size_t totalElements = 0;
-    for (auto &idx : this->indexes) {
-        totalElements += idx->data.size();
-    }
-    for (auto &idx : this->indexes) {
-        idx->maxSearchEntries = std::round(static_cast<float>(maxSearchEntries) * idx->data.size() / totalElements);
-    }
+    this->maxSearchEntries = maxSearchEntries;
+    SetSearchEntriesPerIdx();
+
     this->promptCache.SetParameters(promptBranchLength, promptPrefixLength, inputTokensToPutInSelfOutput);
 }
 
@@ -867,18 +859,52 @@ void Reader::UpdateIndexes()
             }
 
             // Update the subsampling parameters of the indices
-            size_t totalElements = 0;
-            for (auto &idx : indexes) {
-                totalElements += idx->data.size();
-            }
-            for (auto &idx : indexes) {
-                idx->maxSearchEntries = maxSearchEntries * idx->data.size() / totalElements;
-            }
+            SetSearchEntriesPerIdx();
 
             // The new subIndex will recycle the memory of the first to discard: wait (earlier in the loop) that no one
             // has references to it
             newSubindex = toRemoveAndRecycle;
         }
+    }
+}
+
+/**
+ * After changing the indexes, or updating maxSearchEntries, the entries per index
+ * must be updated.
+ * This is just a helper method to avoid repeating code, not thread-safe.
+ */
+void Reader::SetSearchEntriesPerIdx() {
+    // If you mutate/read indexes from multiple threads, uncomment:
+    // std::lock_guard<std::mutex> lock(indexesMtx);
+
+    if (indexes.empty()) return;
+
+    // Sum all elements
+    size_t totalElements = 0;
+    for (const auto& sp : indexes) {                // sp is std::shared_ptr<SubIndex>
+        totalElements += sp->data.size();
+    }
+
+    const size_t firstIndexSize = indexes.front() ? indexes.front()->data.size() : 0;
+
+    for (auto& sp : indexes) {
+        const size_t idxSize = sp->data.size();
+
+        // Proportional allocation (rounded to nearest)
+        const size_t proportional = static_cast<size_t>(std::llround(
+            static_cast<double>(maxSearchEntries) *
+            (totalElements ? (static_cast<double>(idxSize) / static_cast<double>(totalElements)) : 0.0)
+        ));
+
+        // Each index should lookup at least 20 elements (or proportionally less for the last one)
+        const size_t minByFirst = (firstIndexSize > 0)
+            ? static_cast<size_t>(std::llround(20.0 * static_cast<double>(idxSize) /
+                                               static_cast<double>(firstIndexSize)))
+            : 0;
+
+        size_t value = std::max(proportional, minByFirst);
+
+        sp->maxSearchEntries.store(value, std::memory_order_relaxed);
     }
 }
 

@@ -260,10 +260,10 @@ std::pair<std::vector<int>, std::vector<int>> FinalTrie::GetCandidatesAndAttnMas
 
 std::tuple<std::vector<int>, std::vector<int>,
     std::vector<int>, std::vector<int>> FinalTrie::GetCandidatesMaskSglang(
-    std::shared_ptr<bool[]>& mask_buffer)
+        std::shared_ptr<bool[]>& mask_buffer)
 {
     /* SGLang requires a mask built with BFS. */
-    
+
     const int nTot = GetTotalNodes();
 
     std::vector<int> candidates;        candidates.reserve(nTot);
@@ -284,52 +284,49 @@ std::tuple<std::vector<int>, std::vector<int>,
 
     while (!q.empty())
     {
-        const std::size_t levelSize = q.size();  // nodes currently in queue
-        int prevOnLevel = -1;   // for nextSibling links
+        auto front = q.front();
+        q.pop();
+        const FinalTrieNode* node = front.first;
+        int nodeIdx = front.second;
 
-        for (std::size_t i = 0; i < levelSize; ++i)
+        // Gather children, longest sub-tree first
+        std::vector<std::pair<int32_t, std::size_t>> branches(
+            node->subtrees_depths.begin(), node->subtrees_depths.end());
+
+        std::sort(branches.begin(), branches.end(),
+                  [](const auto& a, const auto& b) {
+                      return a.second > b.second;
+                  });
+
+        int firstChildForNode = -1;
+        int prevChildIdx = -1;
+
+        for (const auto& br : branches)
         {
-            auto front = q.front();
-            q.pop();
-            const FinalTrieNode* node = front.first;
-            int nodeIdx = front.second;
+            int32_t tok = br.first;
+            const FinalTrieNode* child = node->children.at(tok);
 
-            // sibling chain for the current level
-            if (prevOnLevel != -1)
-                nextSiblingIdx[prevOnLevel] = nodeIdx;
-            prevOnLevel = nodeIdx;
+            const int childIdx = static_cast<int>(candidates.size());
 
-            // Gather children, longest sub-tree first (usually longer branches mean higher prob, and faster acceptance)
-            std::vector<std::pair<int32_t, std::size_t>> branches(
-                    node->subtrees_depths.begin(), node->subtrees_depths.end());
-            std::sort(branches.begin(), branches.end(),
-                      [](const auto& a, const auto& b){ return a.second > b.second; });
+            if (firstChildForNode == -1)
+                firstChildForNode = childIdx;   // remember first child
 
-            int firstChildForNode = -1;
+            if (prevChildIdx != -1)
+                nextSiblingIdx[prevChildIdx] = childIdx;
+            prevChildIdx = childIdx;
 
-            for (const auto& br : branches)
-            {
-                int32_t tok = br.first;
-                const FinalTrieNode*  child = node->children.at(tok);
+            // Push child into BFS order
+            candidates.push_back(tok);
+            depths.push_back(depths[nodeIdx] + 1);
+            firstChildIdx.push_back(-1);
+            nextSiblingIdx.push_back(-1);
+            parents.push_back(nodeIdx);
 
-                const int childIdx = static_cast<int>(candidates.size());
-
-                if (firstChildForNode == -1)
-                    firstChildForNode = childIdx;   // remember first child
-
-                // Push child into the BFS order
-                candidates.push_back(tok);
-                depths.push_back(depths[nodeIdx] + 1);
-                firstChildIdx.push_back(-1);            // to be filled later
-                nextSiblingIdx.push_back(-1);
-                parents.push_back(nodeIdx);
-
-                q.emplace(child, childIdx);
-            }
-
-            if (firstChildForNode != -1)
-                firstChildIdx[nodeIdx] = firstChildForNode;
+            q.emplace(child, childIdx);
         }
+
+        if (firstChildForNode != -1)
+            firstChildIdx[nodeIdx] = firstChildForNode;
     }
 
     const int N = nTot;
@@ -348,7 +345,7 @@ std::tuple<std::vector<int>, std::vector<int>,
         std::move(depths),
         std::move(firstChildIdx),
         std::move(nextSiblingIdx)
-        };
+    };
 }
 
 std::vector<std::vector<int>> FinalTrie::GetCartesianDrafts()

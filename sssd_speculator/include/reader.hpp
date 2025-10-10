@@ -116,6 +116,8 @@ private:
 
     void UpdateIndexes();
 
+    void SetSearchEntriesPerIdx();
+
     void WriteIndexesToDisk(const std::string &path);
 };
 

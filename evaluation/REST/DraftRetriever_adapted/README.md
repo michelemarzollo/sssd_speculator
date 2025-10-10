@@ -36,7 +36,7 @@ pip3 install wheels/draftretriever-0.1.0-cp39-cp39-manylinux_2_34_x86_64.whl
 **Build from source**
 ```sh
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-maturin build --release --strip -i python3.11 # will produce a .whl file
+maturin build --release --strip -i python3.9 # will produce a .whl file
 pip3 install [.whl]
 ```
 
