@@ -10,8 +10,8 @@ Please use the .idx extension for the index.
 
 Usage example:
 python create_datastore.py \
-    --index_file_path /storage/users/mmarzollo/datastores/hitz-magpie-llama3.1-8B_magpie-llama-3.1-MT-500_plus_german.idx \
-    --model /storage/datasets/huggingface/hub/models--meta-llama--Meta-Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659 \
+    --index_file_path /storage/datasets/sssd_speculator/hitz-magpie-llama3.1-8B_magpie-llama-3.1-MT-500_plus_german.idx \
+    --model /storage/datasets/huggingface/models/models--meta-llama--Meta-Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659 \
     --datasets sharegpt-de synthia-german \
     --extend-index
 
@@ -27,9 +27,9 @@ answers = [
 ]
 write_jsonl("answers.jsonl", answers)
 
-nohup python create_datastore.py --index_file_path /storage/users/mmarzollo/datastores/hitz-magpie_llama3.1-8B.idx \
-    --model /storage/datasets/huggingface/hub/models--meta-llama--Meta-Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659/ \
-    --datasets hitz-magpie-llama3.1-8b > datastore_creation.log 2>&1 &
+nohup python create_datastore.py --index_file_path /storage/datasets/sssd_speculator/hitz-magpie-llama3.1-8B_magpie-llama-3.1-MT-500-german-stack.idx \
+    --model /storage/datasets/huggingface/models/models--meta-llama--Meta-Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659 \
+    --datasets sharegpt-de synthia-german python-stack --extend-index > datastore_creation5.log 2>&1 &
 """
 
 import sssd_speculator
@@ -56,6 +56,8 @@ KEYWORD_MAP = {
     "magpie-llama31-pro": ("Magpie-Align/Magpie-Llama-3.1-Pro-MT-500K-v0.1", "magpie"),
     "magpie-qwen-coder": ("Magpie-Align/Magpie-Qwen2.5-Coder-Pro-300K-v0.1", "magpie"),
     "magpie-qwen2-cn": ("Magpie-Align/Magpie-Qwen2-Pro-200K-Chinese", "magpie"),
+    "magpie-llama33-pro-1M": ("Magpie-Align/Magpie-Llama-3.3-Pro-1M-v0.1", "magpie"),
+    "magpie-llama33-reason": ("Magpie-Align/Magpie-Reasoning-V2-250K-CoT-Llama3", "magpie"),
     "hitz-magpie-llama3.1-8b": ("HiTZ/Magpie-Llama-3.1-8B-Instruct-Filtered", "magpie"),
 
     # ShareGPT / UltraChat
@@ -69,7 +71,10 @@ KEYWORD_MAP = {
     "deepseek-r1-chinese": ("Congliu/Chinese-DeepSeek-R1-Distill-data-110k-SFT", "deepseek_chinese"),
 
     "pile-val": ("monology/pile-uncopyrighted", "pile"),
-    "synthia-german": ("jphme/synthia_german_experimental", "synthia_german")
+    "synthia-german": ("jphme/synthia_german_experimental", "synthia_german"),
+    "baseten-gpt-oss": ("baseten-admin/gpt-oss120b-generated-magpie-1m-v0.1", "baseten_gpt"),
+    "jackrong-gpt-oss": ("Jackrong/gpt-oss-120B-distilled-reasoning", "jackrong_gpt"),
+    "python-stack": ("bigcode/the-stack-dedup", "python_stack")
 }
 
 # ---- Tokenization helpers ----
@@ -99,7 +104,7 @@ def write_texts(writer, text_iter: Iterable[str], batch_size: int, tokenizer: Pr
 # All Magpie datasets share the same structure -> one reader reused.
 
 
-def iter_magpie(repo: str) -> Iterable[str]:
+def iter_magpie(repo: str, hf_token: str) -> Iterable[str]:
     ds = load_dataset(repo, split="train", download_mode="reuse_dataset_if_exists")
     for row in ds:
         for m in row["conversations"]:
@@ -107,7 +112,7 @@ def iter_magpie(repo: str) -> Iterable[str]:
                 yield m["value"]
 
 
-def iter_sharegpt(repo: str) -> Iterable[str]:
+def iter_sharegpt(repo: str, hf_token: str) -> Iterable[str]:
     ds = load_dataset(repo, split="train", download_mode="reuse_dataset_if_exists")
     for row in ds:
         for m in row["conversations"]:
@@ -115,7 +120,7 @@ def iter_sharegpt(repo: str) -> Iterable[str]:
                 yield m["value"]
 
 
-def iter_ultrachat(repo: str) -> Iterable[str]:
+def iter_ultrachat(repo: str, hf_token: str) -> Iterable[str]:
     ds = load_dataset(repo, split="train", download_mode="reuse_dataset_if_exists")
     for row in ds:
         msgs = row["data"]
@@ -124,7 +129,7 @@ def iter_ultrachat(repo: str) -> Iterable[str]:
             yield msgs[i]
 
 
-def iter_pile(repo: str) -> Iterable[str]:
+def iter_pile(repo: str, hf_token: str) -> Iterable[str]:
     # stream validation and test
     for split in ("validation", "test"):
         ds = load_dataset(repo, split=split, streaming=True)
@@ -132,7 +137,7 @@ def iter_pile(repo: str) -> Iterable[str]:
             yield ex["text"]
 
 
-def iter_deepseek_dolphin(repo: str) -> Iterable[str]:
+def iter_deepseek_dolphin(repo: str, hf_token: str) -> Iterable[str]:
     ds = load_dataset(repo, split="train", download_mode="reuse_dataset_if_exists")
     for row in ds:
         for m in row["messages"]:
@@ -140,22 +145,49 @@ def iter_deepseek_dolphin(repo: str) -> Iterable[str]:
                 yield m["content"]
 
 
-def iter_deepseek_distill(repo: str) -> Iterable[str]:
+def iter_deepseek_distill(repo: str, hf_token: str) -> Iterable[str]:
     ds = load_dataset(repo, split="train", download_mode="reuse_dataset_if_exists")
     for row in ds:
         # Combine content + reasoning with think tags
         yield f"<think>\n{row['content']}\n</think>\n\n{row['reasoning_content']}"
 
 
-def iter_deepseek_chinese(repo: str) -> Iterable[str]:
+def iter_deepseek_chinese(repo: str, hf_token: str) -> Iterable[str]:
     ds = load_dataset(repo, split="train", download_mode="reuse_dataset_if_exists")
     for row in ds:
         yield row["output"]
 
-def iter_synthia_german(repo: str) -> Iterable[str]:
+def iter_synthia_german(repo: str, hf_token: str) -> Iterable[str]:
     ds = load_dataset(repo, split="train", download_mode="reuse_dataset_if_exists")
     for row in ds:
         yield row["response"]
+
+def iter_baseten_gpt(repo: str, hf_token: str) -> Iterable[str]:
+    ds = load_dataset(repo, split="train", download_mode="reuse_dataset_if_exists")
+    for row in ds:
+        for m in row["conversations"]:
+            if m.get("role") == "assistant":
+                yield m["content"]
+
+def iter_jackrong_gpt(repo: str, hf_token: str) -> Iterable[str]:
+    ds = load_dataset(repo, split="train", download_mode="reuse_dataset_if_exists")
+    for row in ds:
+        yield row["output"]
+
+def iter_python_stack(repo: str, hf_token: str) -> Iterable[str]:
+    segment = 3
+    data_files = []
+    for i in range(segment):
+        if i>=100:
+            data_files.append(f"data-00{i}-of-00144.parquet")
+        elif i >=10:
+            data_files.append(f"data-000{i}-of-00144.parquet")
+        else:
+            data_files.append(f"data-0000{i}-of-00144.parquet")
+
+    ds = load_dataset(repo, data_dir='data/python', split='train', data_files=data_files, token=hf_token)
+    for row in ds:
+        yield row["content"]
 
 
 def load_npz_sequences(filepath: str) -> Iterable[List[int]]:
@@ -208,6 +240,9 @@ READERS = {
     "deepseek_distill": iter_deepseek_distill,
     "deepseek_chinese": iter_deepseek_chinese,
     "synthia_german": iter_synthia_german,
+    "baseten_gpt": iter_baseten_gpt,
+    "jackrong_gpt": iter_jackrong_gpt,
+    "python_stack": iter_python_stack,
 }
 
 # ---- Resolver ----
@@ -244,10 +279,11 @@ def resolve_item(item: str):
 # ---- Build ----
 
 
-def build_index(index_file_path: str, datasets: List[str], batch_size: int, tokenizer: PreTrainedTokenizerBase):
+def build_index(index_file_path: str, datasets: List[str], batch_size: int,
+                tokenizer: PreTrainedTokenizerBase, hf_token: str):
     writer = sssd_speculator.Writer(
         index_file_path=index_file_path,
-        vocab_size=tokenizer.vocab_size + 1,
+        vocab_size=tokenizer.vocab_size + 200,
     )
     for item in datasets:
         spec = resolve_item(item)
@@ -259,7 +295,7 @@ def build_index(index_file_path: str, datasets: List[str], batch_size: int, toke
             write_texts(writer, iter_jsonl_texts(spec["path"]), batch_size, tokenizer)
         else:
             reader_fn = READERS[spec["reader"]]
-            write_texts(writer, reader_fn(spec["repo"]), batch_size, tokenizer)
+            write_texts(writer, reader_fn(spec["repo"], hf_token), batch_size, tokenizer)
     writer.finalize()
 
 # ---- CLI ----
@@ -282,6 +318,11 @@ def main():
         action="store_true",
         help="If set and index_file_path exists, append new entries to the existing index."
     )
+    parser.add_argument(
+        "--stack-token",
+        type=str,
+        help="If not set, cannot use the Stack dataset for code data."
+    )
     args = parser.parse_args()
 
     tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=True)
@@ -301,7 +342,8 @@ def main():
     os.makedirs(os.path.dirname(args.index_file_path) or ".", exist_ok=True)
 
     start = time.time()
-    build_index(args.index_file_path, args.datasets, batch_size=args.batch_size, tokenizer=tokenizer)
+    build_index(args.index_file_path, args.datasets, batch_size=args.batch_size,
+                tokenizer=tokenizer, hf_token=args.stack_token)
     minutes = (time.time() - start) / 60.0
     if not extended:
         print(f"Index file {args.index_file_path} created and written to disk.")
