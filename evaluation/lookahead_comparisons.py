@@ -35,13 +35,19 @@ def load_npz(filepath):
     return generated_arrays
 
 
-def get_branch_len_from_decoding_len(model_name, decoding_length):
-    if decoding_length <= 4:
-        return decoding_length - 1
-    elif decoding_length <= 8:
-        return 5
-    else:
-        return 6
+def get_branch_len_from_decoding_len(speculate_len: int):
+        if speculate_len <= 5:
+            branch_length = speculate_len - 1
+        elif speculate_len <= 8:
+            branch_length = 5
+        elif speculate_len <= 32:
+            branch_length = 6
+        elif speculate_len <= 48:
+            branch_length = 8
+        else:
+            branch_length = 10
+
+        return branch_length
 
 
 #### SPECULATORS ####
@@ -80,9 +86,16 @@ class ABCSpeculator:
 
 
 class PIASpeculator(ABCSpeculator):
-    def __init__(self, prefix_len, max_branch_len):
+    def __init__(self, prefix_len, max_branch_len, pia_cache_path: str):
         super().__init__(prefix_len)
+        self.cache_path = pia_cache_path
         self.lookahead_cache = LookaheadCache()
+        if self.cache_path is not None:
+            start_time = time.time()
+            self.lookahead_cache.load_mem(self.cache_path)
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            print(f"Finished loading the Lookahead cache. Time taken: {elapsed_time:.2f} seconds")
         self.prefix_len = prefix_len
         self.max_branch_len = max_branch_len
 
@@ -127,6 +140,15 @@ class PIASpeculator(ABCSpeculator):
     def finish_sequence(self, idx):
         self.lookahead_cache.stream_put(
             [], branch_length=1, final=True, mode='output', idx=idx)
+        
+    def clear_cache_and_reload(self):
+        self.lookahead_cache.fresh()
+        if self.cache_path is not None:
+            start_time = time.time()
+            self.lookahead_cache.load_mem(self.cache_path)
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            print(f"Finished loading the Lookahead cache. Time taken: {elapsed_time:.2f} seconds")
 
 
 class SSSDSpeculator(ABCSpeculator):
@@ -444,6 +466,10 @@ def average_prediction_length(
             del curr_sequences[seq_id]
 
     print("Max dec len: ", max(toks_in_drafts))
+
+    if isinstance(speculator, PIASpeculator):
+        speculator.clear_cache_and_reload()
+
     return {
         'retrieval_times': retrieval_times,
         'total_tokens_in_drafts': total_tokens_in_drafts,
@@ -489,7 +515,7 @@ def measure_hit_rate(args):
         print("\nStarting speculating with method", speculator_type)
         # Create the speculator
         if speculator_type == 'pia':
-            speculator = PIASpeculator(PIA_QUERY_LENGTH, MAX_TRIE_DEPTH)
+            speculator = PIASpeculator(PIA_QUERY_LENGTH, MAX_TRIE_DEPTH, args.pia_cache_path)
         elif speculator_type == 'rest':
             if args.datastore_path is None:
                 datastore_path = f"{args.storage_dir}/sssd_sharegpt_{args.model_name}.idx"
@@ -521,18 +547,7 @@ def measure_hit_rate(args):
         for dl in args.decoding_lengths:
             print(f"\nDECODING LENGHT: {dl}")
 
-            if speculator_type == 'pia':
-                # clear pia cache
-                speculator.lookahead_cache.fresh()
-                # Fill the lookahead cache with ShareGPT data
-                if args.pia_warmup > 0:
-                    lookahead_cache_warm_up(speculator.lookahead_cache,
-                                            get_tokenized_data_path(
-                                                args.storage_dir, args.model_name),
-                                            MAX_TRIE_DEPTH,
-                                            num_entries=args.pia_warmup)
-
-            single_draft_len = get_branch_len_from_decoding_len(args.model_name, dl)
+            single_draft_len = get_branch_len_from_decoding_len(dl)
 
             start_time = time.time()
             dict_res = average_prediction_length(
@@ -600,17 +615,17 @@ def main():
     parser.add_argument('--decoding_lengths', nargs='+',
                         type=int, default=[2, 4, 8, 12, 16, 24, 32])
     parser.add_argument('--dataset_names', nargs='+', type=str,
-                        default=['mt-bench', 'dolly-15k', 'gsm8k'])
+                        default=['mt-bench', 'gsm8k'])
     # Possible arguments: 'sssd', 'pia', 'rest', 'updated_rest', 'my_rest'
     parser.add_argument('--speculator_types', nargs='+',
-                        type=str, default=["sssd", "pia"])
+                        type=str, default=['pia', 'rest', 'sssd'])
     parser.add_argument('--tensors_dir', type=str,
                         default="./offline_speculation_data")
     parser.add_argument('--storage_dir', type=str,
                         default="./specdec_data/sssd_datastores")
     # if provided, has precedence over --storage_dir
     parser.add_argument('--datastore_path', type=str, default=None)
-    parser.add_argument('--pia_warmup', type=int, default=10000)
+    parser.add_argument('--pia_cache_path', type=str, default=None)
 
     args = parser.parse_args()
 

@@ -28,7 +28,7 @@ pip install target/wheels/draftretriever*.whl
 ```
 git clone https://github.com/alipay/PainlessInferenceAcceleration.git
 cd PainlessInferenceAcceleration/lookahead
-python setup.py install
+pip install -e .
 ```
 
 
@@ -100,13 +100,9 @@ Then you should be able to run the script normally.
 
 ### Create the datastore
 
-In order to speedup testing, you can create a small datastore using the ShareGPT dataset and running
+To build a big pia cache use `create_pia_cache.py`. Note that this might take more than a day to build it with as much data as the one used by sssd.
 
-```bash
-python create_datastores.py --model_name Qwen2.5-7B-Instruct
-```
-
-This will generate the datastore that can be used by both REST and SSSD and will store some data that can be loaded by PIA to warm-up the cache.
+For REST and SSSD have a look at the `datastore_creation` folder. REST was slightly modified to support 32-but tokens, and use the same exact datastore file as SSSD.
 
 ### Run the offline method comparison
 
@@ -115,4 +111,4 @@ Run
 python lookahead_comparisons.py
 ```
 
-which will output the results of speculation accuracy and retreival time in text format.
+which will output the results of speculation accuracy and retreival time in text format. Check the possible arguments to pass.

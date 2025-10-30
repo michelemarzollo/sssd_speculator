@@ -8,9 +8,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 
 # Insert the path to the models you want to use
 model_path_dict = {
-    "Llama-2-7b-chat-hf": "",
-    "Llama-3-8B-Instruct": "",
-    "Qwen2.5-7B-Instruct": "",
+    "Llama-3.1-8B-Instruct": "/storage/datasets/huggingface/models/models--meta-llama--Meta-Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659",
 }
 
 
@@ -178,7 +176,7 @@ def main():
 
     parser.add_argument('--model_name', default="Llama-3.1-8B-Instruct")
     parser.add_argument('--dataset_names', nargs='+', type=str,
-                        default=['mt-bench', 'dolly-15k', 'gsm8k'])
+                        default=['mt-bench', 'gsm8k'])
     parser.add_argument('--datasets_dir', type=str,
                         default="./datasets/")
     parser.add_argument('--batch_size', type=int, default=16)
