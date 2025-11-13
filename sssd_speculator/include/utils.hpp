@@ -23,6 +23,7 @@
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 
+
 constexpr int PRIORITY_HIGH = 1;
 constexpr int PRIORITY_LOW = 0;
 
@@ -104,76 +105,36 @@ inline int constructSuffixArrayInplace(std::vector<int32_t> &dataBuffer, std::ve
     return returnValue;
 }
 
-inline size_t GetPinnedCpuCount()
-{
-    // Get the number of CPU cores in the system
-    cpu_set_t cpuset;
-    CPU_ZERO(&cpuset);
+size_t GetPinnedCpuCount();
+void PinThreadToCore(int coreId);
 
-    // Get the current process's CPU affinity
-    if (sched_getaffinity(0, sizeof(cpu_set_t), &cpuset) == -1) {
-        std::cerr << "Error getting CPU affinity" << std::endl;
-        return 0;
-    }
+// NUMA restrictions
 
-    // Count the number of CPUs that are part of the affinity mask
-    size_t count = 0;
-    std::ostringstream cpuStream;
-    for (int i = 0; i < CPU_SETSIZE; ++i) {
-        if (CPU_ISSET(i, &cpuset)) {
-            ++count;
-            if (cpuStream.tellp() > 0) {
-                cpuStream << ", ";
-            }
-            cpuStream << i;
-        }
-    }
-    auto logger = GetLogger();
-    SPDLOG_LOGGER_DEBUG(logger, "Pinned CPUs: {}", cpuStream.str());
-    return count;
-}
+enum class AffinityScope {
+    kAny,          // No extra restriction: keep current affinity as-is
+    kLocalNode,    // Restrict to NUMA node of current CPU if available; else no-op
+    kSpecificCore  // Pin to a specific core (validate it is within local node if NUMA)
+};
 
-inline std::vector<int> get_available_cores()
-{
-    std::vector<int> available_cores;
-    const char *tasksetOutput = "taskset -c $(taskset -p $$ | sed 's/^[^:]*: //')";
-    FILE *fp = popen(tasksetOutput, "r");
 
-    if (fp == nullptr) {
-        std::cerr << "Failed to get available cores" << std::endl;
-        return available_cores;
-    }
+int GetCurrentNUMANode(std::shared_ptr<spdlog::logger> logger);
+bool BuildCpusetForNode(int node, cpu_set_t &out, std::shared_ptr<spdlog::logger> logger);
+bool PinThreadToLocalNUMANode(std::shared_ptr<spdlog::logger> logger);
+void PreferLocalNodeMemory(std::shared_ptr<spdlog::logger> logger);
+bool ConstrainProcessToLocalNode(std::shared_ptr<spdlog::logger> logger);
+// Apply the cpuset to the current thread
+bool ApplyThreadAffinity(const cpu_set_t& set, std::shared_ptr<spdlog::logger> logger);
 
-    char buffer[128];
-    std::string result;
-    while (fgets(buffer, sizeof(buffer), fp)) {
-        result += buffer;
-    }
-    fclose(fp);
+// Builds a cpuset according to the requested scope.
+// - For kAny: just returns current affinity.
+// - For kLocalNode: intersect(current_affinity, local_node_cpus) if NUMA available; else current_affinity.
+// - For kSpecificCore: returns only that core; if NUMA available, also verifies it’s in the local node.
+bool BuildEffectiveCpuset(
+    AffinityScope scope,
+    cpu_set_t& out,
+    int core_id /* used only for kSpecificCore */,
+    std::shared_ptr<spdlog::logger> logger);
 
-    // Parse the available cores from the taskset output
-    std::istringstream iss(result);
-    std::string token;
-    while (std::getline(iss, token, ',')) {
-        available_cores.push_back(std::stoi(token));
-    }
-
-    return available_cores;
-}
-
-inline void PinThreadToCore(int coreId)
-{
-    cpu_set_t cpuset;
-    CPU_ZERO(&cpuset);
-    CPU_SET(coreId, &cpuset);  // Pin to the core_id
-
-    pthread_t currentThread = pthread_self();
-    int ret = pthread_setaffinity_np(currentThread, sizeof(cpu_set_t), &cpuset);
-    if (ret != 0) {
-        std::cerr << "Failed to set thread affinity: " << ret << std::endl;
-    } else {
-        std::cout << "Thread pinned to core " << coreId << std::endl;
-    }
-}
+std::vector<int> GetEffectiveCores(AffinityScope scope, std::shared_ptr<spdlog::logger> logger, int core_id = -1);
 
 #endif  // UTILS_HPP

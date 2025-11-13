@@ -82,3 +82,20 @@ target_link_libraries(sssd_speculator PRIVATE
   libsais_static
   spdlog::spdlog
 )
+
+# ——— Optional: NUMA support on Linux ———
+if (UNIX AND NOT APPLE)
+  # Try to find libnuma (from numactl)
+  find_library(NUMA_LIB numa)
+
+  if (NUMA_LIB)
+    message(STATUS "libnuma found: ${NUMA_LIB} — enabling NUMA-aware code")
+    target_compile_definitions(sssd_speculator PRIVATE HAVE_LIBNUMA=1)
+    target_link_libraries(sssd_speculator PRIVATE ${NUMA_LIB})
+  else()
+    message(STATUS "libnuma not found — building without NUMA support")
+  endif()
+endif()
+
+find_package(Threads REQUIRED)
+target_link_libraries(sssd_speculator PRIVATE Threads::Threads)

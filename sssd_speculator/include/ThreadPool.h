@@ -84,16 +84,22 @@ inline ThreadPool::ThreadPool(size_t threads) : stop(false), currentLowPriorityT
         throw std::invalid_argument("ThreadPool must have at least one thread.");
     }
 
-    // Calculate maximum concurrent low-priority tasks
     maxLowPriorityConcurrency = threads / 2;
-
-    // If threads is 1, allow at least one low-priority task
     if (maxLowPriorityConcurrency == 0 && threads > 0) {
         maxLowPriorityConcurrency = 1;
     }
 
     for (size_t i = 0; i < threads; ++i)
-        workers.emplace_back([this] {
+        // capture i so (if desired later) you can make per-worker choices
+        workers.emplace_back([this, i] {
+            // --- One-time NUMA/affinity init for this worker thread ---
+            auto logger = GetLogger();
+            // Constrain scheduling of this thread to the NUMA node it started on (no-op if non-NUMA)
+            PinThreadToLocalNUMANode(logger);
+            // Prefer memory from that node (affects subsequent allocations in this thread)
+            PreferLocalNodeMemory(logger);
+            // --- End one-time init ---
+
             while (true) {
                 std::function<void()> task;
                 bool is_low_priority = false;
@@ -103,13 +109,12 @@ inline ThreadPool::ThreadPool(size_t threads) : stop(false), currentLowPriorityT
                     this->condition.wait(lock, [this] {
                         return this->stop || !this->high_priority_tasks.empty() ||
                                (!this->low_priority_tasks.empty() &&
-                                   this->currentLowPriorityTasks.load() < this->maxLowPriorityConcurrency);
+                                this->currentLowPriorityTasks.load() < this->maxLowPriorityConcurrency);
                     });
 
                     if (this->stop && this->high_priority_tasks.empty() && this->low_priority_tasks.empty())
                         return;
 
-                    // Prioritize high priority tasks
                     if (!this->high_priority_tasks.empty()) {
                         task = std::move(this->high_priority_tasks.front());
                         this->high_priority_tasks.pop();
@@ -131,10 +136,7 @@ inline ThreadPool::ThreadPool(size_t threads) : stop(false), currentLowPriorityT
                     }
 
                     if (is_low_priority) {
-                        // Decrement the count after task completion
-                        size_t previous = this->currentLowPriorityTasks.fetch_sub(1, std::memory_order_relaxed);
-                        // Optionally, you can add error checking to ensure it doesn't underflow
-                        // Notify other threads in case they are waiting to execute low priority tasks
+                        this->currentLowPriorityTasks.fetch_sub(1, std::memory_order_relaxed);
                         this->condition.notify_all();
                     }
                 }

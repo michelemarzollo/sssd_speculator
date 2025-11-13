@@ -61,10 +61,16 @@ Reader::Reader(const std::string &indexFilePath, int stopToken, int maxSearchEnt
 {
     logger = GetLogger();
 
+    if (!ConstrainProcessToLocalNode(logger)) {   // hard bind + mempolicy if NUMA
+        PinThreadToLocalNUMANode(logger);         // soft fallback
+        PreferLocalNodeMemory(logger);
+    }
+
     size_t pinnedThreads = GetPinnedCpuCount();
     size_t maxCpus = static_cast<size_t>(std::thread::hardware_concurrency());
-    // There are also finish and update threads, logger, possible writer to disk
-    size_t maxThreads = std::max(size_t(1), std::min(pinnedThreads, maxCpus) - 4);
+    size_t reserve = 4;
+    size_t maxThreads = std::max<size_t>(1,
+        std::min(pinnedThreads, maxCpus) > reserve ? std::min(pinnedThreads, maxCpus) - reserve : 1);
 
     this->nodeBlockPool = std::make_shared<TrieNodeBlockPool>(MAX_POOL_BLOCK_SIZE);
     this->selfOutputPool = std::make_shared<VectorPool>(maxOutPutSize);
@@ -72,6 +78,7 @@ Reader::Reader(const std::string &indexFilePath, int stopToken, int maxSearchEnt
     SPDLOG_LOGGER_DEBUG(logger, "pinnedThreads: {}", pinnedThreads);
     SPDLOG_LOGGER_DEBUG(logger, "maxCpus: {}", maxCpus);
     SPDLOG_LOGGER_DEBUG(logger, "Thread pool size: {}", maxThreads);
+
     threadPool = std::make_shared<ThreadPool>(maxThreads);
 
     // Finish initializing the prompt cache properly (ugly, but hard to do otherwise)
