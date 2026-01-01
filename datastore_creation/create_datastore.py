@@ -57,24 +57,32 @@ KEYWORD_MAP = {
     "magpie-qwen-coder": ("Magpie-Align/Magpie-Qwen2.5-Coder-Pro-300K-v0.1", "magpie"),
     "magpie-qwen2-cn": ("Magpie-Align/Magpie-Qwen2-Pro-200K-Chinese", "magpie"),
     "magpie-llama33-pro-1M": ("Magpie-Align/Magpie-Llama-3.3-Pro-1M-v0.1", "magpie"),
+    "magpie-llama33-pro-500k": ("Magpie-Align/Magpie-Llama-3.3-Pro-500K-Filtered", "magpie"),
     "magpie-llama33-reason": ("Magpie-Align/Magpie-Reasoning-V2-250K-CoT-Llama3", "magpie"),
     "hitz-magpie-llama3.1-8b": ("HiTZ/Magpie-Llama-3.1-8B-Instruct-Filtered", "magpie"),
+    "deepseek-r1-llama70B": ("Magpie-Align/Magpie-Reasoning-V2-250K-CoT-Deepseek-R1-Llama-70B", "magpie"),
 
     # ShareGPT / UltraChat
     "sharegpt": ("Aeala/ShareGPT_Vicuna_unfiltered", "sharegpt"),
     "ultrachat": ("stingning/ultrachat", "ultrachat"),
     "sharegpt-de": ("FreedomIntelligence/sharegpt-deutsch", "sharegpt"),
+    "oh-dcft": ("mlfoundations-dev/oh-dcft-v3.1-llama-3.3-70b", "sharegpt"),
 
     # DeepSeek-R1 family
     "deepseek-r1-dolphin": ("DKYoon/dolphin-r1-deepseek-filtered", "deepseek_dolphin"),
     "deepseek-r1-distill": ("tuanha1305/DeepSeek-R1-Distill", "deepseek_distill"),
     "deepseek-r1-chinese": ("Congliu/Chinese-DeepSeek-R1-Distill-data-110k-SFT", "deepseek_chinese"),
+    "deepseek-r1-math-response": ("roderickwen/DeepSeek-R1-Math-Response", "deepseek_dolphin"),
 
     "pile-val": ("monology/pile-uncopyrighted", "pile"),
     "synthia-german": ("jphme/synthia_german_experimental", "synthia_german"),
     "baseten-gpt-oss": ("baseten-admin/gpt-oss120b-generated-magpie-1m-v0.1", "baseten_gpt"),
     "jackrong-gpt-oss": ("Jackrong/gpt-oss-120B-distilled-reasoning", "jackrong_gpt"),
-    "python-stack": ("bigcode/the-stack-dedup", "python_stack")
+    "python-stack": ("bigcode/the-stack-dedup", "python_stack"),
+    # For LLama3.3-70B
+    "llama_future_code": ("future-architect/Llama-3.3-Future-Code-Instructions", "future_code"),
+    "llama_ultrainteract": ("simonycl/llama-3.3-70b-ultrainteract", "ultrainteract"),
+    "llama_wildchat": ("nyu-dice-lab/allenai_WildChat-1M-Full-meta-llama_Llama-3.3-70B-Instruct", "wildchat")
 }
 
 # ---- Tokenization helpers ----
@@ -189,6 +197,64 @@ def iter_python_stack(repo: str, hf_token: str) -> Iterable[str]:
     for row in ds:
         yield row["content"]
 
+def iter_future_code_python(
+    repo: str, 
+    hf_token: str
+) -> Iterable[str]:
+    ds = load_dataset(repo)["train"]
+    num_conv = 300_000
+    tot_conv = 0
+    
+    for row in ds:
+        if row.get("description_language") != "en":
+            continue
+        input_text = row.get("input", "").lower()
+        output_text = row.get("output", "").lower()
+        
+        # Check if either input or output contains "python"
+        if "python" in input_text or "python" in output_text:
+            # Yield only the output field
+            yield row.get("output", "")
+        
+        tot_conv += 1
+        if num_conv is not None and tot_conv >= num_conv:
+            break
+
+def iter_wildchat_llama(repo: str, hf_token: str) -> Iterable[str]:
+    ds = load_dataset(repo, token=hf_token)["train"]
+    num_conv = 1_000_000
+    tot_conv = 0
+    
+    for row in ds:
+        if row.get("toxic", False):
+            continue
+        
+        # Find the first user message
+        first_assistant_msg = None
+        for turn in row.get("conversation", []):
+            if turn.get("role") != "assistant":
+                continue
+            content = (turn.get("content") or "").strip()
+            if content:
+                first_assistant_msg = content
+                break
+        
+        # Skip conversations without a usable first user message
+        if not first_assistant_msg:
+            continue
+        
+        # Yield the first user question from the conversation
+        yield first_assistant_msg
+        
+        tot_conv += 1
+        if num_conv is not None and tot_conv >= num_conv:
+            break
+
+def iter_ultrainteract(repo: str, hf_token: str) -> Iterable[str]:
+    ds = load_dataset(repo, split="train", download_mode="reuse_dataset_if_exists")
+    for row in ds:
+        yield row["response"]
+
 
 def load_npz_sequences(filepath: str) -> Iterable[List[int]]:
     data = np.load(filepath)
@@ -243,6 +309,9 @@ READERS = {
     "baseten_gpt": iter_baseten_gpt,
     "jackrong_gpt": iter_jackrong_gpt,
     "python_stack": iter_python_stack,
+    "future_code": iter_future_code_python,
+    "wildchat": iter_wildchat_llama,
+    "ultrainteract": iter_ultrainteract,
 }
 
 # ---- Resolver ----
@@ -283,7 +352,7 @@ def build_index(index_file_path: str, datasets: List[str], batch_size: int,
                 tokenizer: PreTrainedTokenizerBase, hf_token: str):
     writer = sssd_speculator.Writer(
         index_file_path=index_file_path,
-        vocab_size=tokenizer.vocab_size + 200,
+        vocab_size=tokenizer.vocab_size + 300,
     )
     for item in datasets:
         spec = resolve_item(item)
